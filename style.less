@@ -1,0 +1,368 @@
+@bg-body:       #09090b;       // Fundo Principal (Preto quase absoluto)
+@bg-sidebar:    #121214;       // Fundo Sidebar (Levemente mais claro)
+@bg-hover:      #27272a;       // Hover dos itens
+@bg-active:     #202022;       // Item selecionado
+
+@border:        #27272a;       // Bordas sutis
+@accent:        #3b82f6;       // Azul Principal (Kadiun Blue)
+@text-main:     #e4e4e7;       // Texto claro
+@text-muted:    #a1a1aa;       // Texto secundário
+
+@font-stack:    'JetBrains Mono', 'Consolas', monospace; 
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background-color: @bg-body;
+    color: @text-main;
+    font-family: @font-stack;
+    font-size: 14px;
+    height: 100vh;
+    overflow: hidden; // Evita scroll na página toda
+}
+
+// --- Layout Principal ---
+.app-shell {
+    display: flex;
+    height: 100%;
+    width: 100%;
+}
+
+// --- SIDEBAR (A Estrela) ---
+.sidebar {
+    width: 260px;
+    background-color: @bg-sidebar;
+    border-right: 1px solid @border;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0; // Não deixa espremer
+    transition: width 0.3s ease;
+
+    // Cabeçalho da Sidebar
+    .sidebar-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid @border;
+        
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: @text-main;
+            margin-bottom: 0.5rem;
+            
+            svg { color: @accent; }
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+
+            .dot {
+                width: 6px; height: 6px;
+                background-color: currentColor;
+                border-radius: 50%;
+                box-shadow: 0 0 8px currentColor; // Efeito Neon
+            }
+        }
+    }
+
+    // Navegação
+    .sidebar-nav {
+        flex: 1;
+        padding: 1.5rem 1rem;
+        overflow-y: auto;
+
+        .nav-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: darken(@text-muted, 20%);
+            margin: 1.5rem 0 0.5rem 0.5rem;
+            
+            &:first-child { margin-top: 0; }
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            color: @text-muted;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            margin-bottom: 4px;
+            border-left: 3px solid transparent;
+
+            svg { opacity: 0.7; transition: opacity 0.2s; }
+
+            // Estado: Hover
+            &:hover:not(.disabled) {
+                background-color: @bg-hover;
+                color: @text-main;
+                svg { opacity: 1; }
+            }
+
+            // Estado: Ativo (Página Atual)
+            &.active {
+                background-color: @bg-active;
+                color: @text-main;
+                border-left-color: @accent; // Barrinha azul na esquerda
+                svg { color: @accent; opacity: 1; }
+            }
+
+            // Estado: Desabilitado
+            &.disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+        }
+    }
+
+    // Rodapé da Sidebar
+    .sidebar-footer {
+        padding: 1rem;
+        border-top: 1px solid @border;
+        background-color: darken(@bg-sidebar, 2%);
+        display: grid;
+        gap: 10px;
+
+        .node-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            
+            small { color: darken(@text-muted, 30%); }
+            strong { color: @text-muted; }
+        }
+    }
+}
+
+// --- Conteúdo Principal ---
+.main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+
+    .top-bar {
+        padding: 1.5rem 2rem;
+        border-bottom: 1px solid @border;
+        background-color: @bg-body;
+        
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 400;
+            color: @text-main;
+            letter-spacing: -0.5px;
+        }
+    }
+
+    .content-wrapper {
+        flex: 1;
+        overflow-y: auto; // Scroll só no conteúdo
+        padding: 2rem;
+    }
+}
+
+// --- Componentes Globais (Inputs, Buttons) ---
+// (Mantenha ou adapte os botões antigos aqui para ficarem bonitos)
+.btn {
+    background: @accent;
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 4px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.2s;
+    position: relative;
+    
+    &:hover { filter: brightness(110%); }
+    
+    &:disabled,
+    &[aria-busy="true"] {
+        opacity: 0.7;
+        cursor: not-allowed;
+    }
+    
+    &[aria-busy="true"]::after {
+        content: '';
+        position: absolute;
+        right: 1rem;
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: white;
+        animation: spin 0.6s linear infinite;
+    }
+}
+
+.input-terminal {
+    width: 100%;
+    background: @bg-sidebar;
+    border: 1px solid @border;
+    color: @text-main;
+    padding: 0.8rem;
+    border-radius: 4px;
+    font-family: inherit;
+    margin-bottom: 1rem;
+    
+    &:focus {
+        outline: none;
+        border-color: @accent;
+    }
+    
+    &:invalid {
+        border-color: #ef4444;
+        background: rgba(239, 68, 68, 0.05);
+    }
+}
+
+.module-panel {
+    background: @bg-sidebar;
+    border: 1px solid @border;
+    border-radius: 6px;
+    padding: 2rem;
+    max-width: 800px;
+    transition: all 0.3s ease;
+    
+    h2 { 
+        color: @accent; 
+        margin-bottom: 1rem; 
+        font-size: 1.1rem;
+        border-bottom: 1px solid @border;
+        padding-bottom: 0.5rem;
+    }
+    
+    &:hover {
+        border-color: darken(@border, 10%);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+    }
+}
+
+// Alertas de validação
+.alert {
+    padding: 1rem;
+    border-radius: 4px;
+    margin-top: 1rem;
+    font-weight: 500;
+    animation: slideIn 0.3s ease;
+    
+    &.error {
+        background: rgba(239, 68, 68, 0.1); // Vermelho transparente
+        border: 1px solid #ef4444;
+        color: #fca5a5;
+    }
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+// --- Scrollbar Customizada ---
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: @bg-body;
+}
+
+::-webkit-scrollbar-thumb {
+    background: @border;
+    border-radius: 4px;
+
+    &:hover { background: lighten(@border, 10%); }
+}
+
+// --- Dashboard Grid ---
+.dashboard-header {
+    margin-bottom: 2rem;
+    
+    h2 {
+        font-size: 1.8rem;
+        color: @text-main;
+        margin-bottom: 0.5rem;
+    }
+    
+    p {
+        color: @text-muted;
+        font-size: 0.95rem;
+    }
+}
+
+.grid-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.text-accent { color: @accent; }
+
+// --- Responsividade ---
+@media (max-width: 768px) {
+    .sidebar {
+        width: 200px;
+        
+        .sidebar-header { padding: 1rem; }
+        .sidebar-nav { padding: 1rem 0.5rem; }
+    }
+    
+    .main-content {
+        .top-bar {
+            padding: 1rem 1.5rem;
+            
+            h1 { font-size: 1.2rem; }
+        }
+        
+        .content-wrapper {
+            padding: 1.5rem;
+        }
+    }
+    
+    .grid-stats {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 480px) {
+    .sidebar {
+        width: 160px;
+        
+        .logo-area span { display: none; }
+        .nav-item span { display: none; }
+        .sidebar-footer { display: none; }
+    }
+    
+    .main-content .top-bar {
+        padding: 1rem;
+        
+        h1 { font-size: 1rem; }
+    }
+}
