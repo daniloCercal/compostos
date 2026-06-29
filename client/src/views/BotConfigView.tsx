@@ -644,8 +644,8 @@ export function BotConfigView({ session }: BotConfigViewProps) {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <RoleSelect label="Cargo de aprovado (whitelist)" value={whitelistRoleId} onChange={setWhitelistRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
                       <RoleSelect label="Cargo de verificado" value={verifiedRoleId} onChange={setVerifiedRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
-                      <RoleSelect label="Cargo de staff" value={staffRoleId} onChange={setStaffRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
-                      <RoleSelect label="Cargo de admin" value={adminRoleId} onChange={setAdminRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
+                      <RoleSelect label="Cargo de Suporte" value={staffRoleId} onChange={setStaffRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
+                      <RoleSelect label="Cargo de Admin" value={adminRoleId} onChange={setAdminRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
                     </div>
                   </div>
 

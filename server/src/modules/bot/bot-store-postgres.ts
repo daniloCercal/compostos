@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 
-import type { Bot, BotCommand, BotLog, BotStatus, GuildConfig, WhitelistQuestion, ExtendedGuildConfig, Ticket, PanelEmbedConfig, PanelConfigs } from "../../types";
+import type { Bot, BotCommand, BotLog, BotStatus, GuildConfig, WhitelistQuestion, WhitelistApplication, WhitelistApplicationStatus, ExtendedGuildConfig, Ticket, TicketMessage, PanelEmbedConfig, PanelConfigs } from "../../types";
 import { createId } from "../../utils/id";
 import { encryptSecret, decryptSecret, tokenHash } from "../../utils/crypto";
 import { buildPostgresSsl } from "../../utils/pg";
@@ -14,6 +14,7 @@ type BotRow = {
   id: string;
   name: string;
   token: string;
+  image_data: string | null;
   commands: unknown;
   is_active: boolean;
   created_at: Date | string;
@@ -98,6 +99,32 @@ type TicketRow = {
   created_at: Date | string;
   closed_at: Date | string | null;
   close_reason: string | null;
+  claimed_staff?: unknown;
+};
+
+type TicketMessageRow = {
+  id: string | number;
+  author_id: string;
+  author_name: string | null;
+  content: string | null;
+  attachments: string | null;
+  created_at: Date | string;
+};
+
+type WhitelistApplicationRow = {
+  id: string | number;
+  guild_id: string;
+  user_id: string;
+  channel_id: string;
+  app_number: number | string;
+  status: string;
+  answers: unknown;
+  current_question: number | string;
+  reviewed_by: string | null;
+  review_note: string | null;
+  started_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
 };
 
 type UpdatableBotFields = {
@@ -127,6 +154,10 @@ const CREATE_BOTS_TABLE_DDL = `
 // a coluna `token` seja encriptada em repouso sem quebrar o ResolveBotID do bot.
 const ALTER_BOTS_TOKEN_HASH_DDL = `
   ALTER TABLE bots ADD COLUMN IF NOT EXISTS token_hash text NOT NULL DEFAULT ''
+`;
+
+const ALTER_BOTS_IMAGE_DDL = `
+  ALTER TABLE bots ADD COLUMN IF NOT EXISTS image_data text NOT NULL DEFAULT ''
 `;
 
 const CREATE_BOTS_TOKEN_HASH_INDEX_DDL = `
@@ -371,6 +402,7 @@ function rowToBot(row: BotRow): Bot {
     name: row.name,
     // Desencripta de forma transparente; valores legados (sem prefixo) passam direto.
     token: decryptSecret(row.token, env.BOT_TOKEN_ENC_KEY),
+    image: row.image_data ?? "",
     commands: normalizeCommands(row.commands),
     isActive: Boolean(row.is_active),
     createdAt: toIso(row.created_at),
@@ -480,6 +512,37 @@ function rowToWhitelistQuestion(row: WhitelistQuestionRow): WhitelistQuestion {
   };
 }
 
+const WHITELIST_APP_STATUSES: WhitelistApplicationStatus[] = [
+  "pending", "theory_passed", "approved", "rejected", "cancelled", "timed_out",
+];
+
+function rowToWhitelistApplication(row: WhitelistApplicationRow): WhitelistApplication {
+  const status = WHITELIST_APP_STATUSES.includes(row.status as WhitelistApplicationStatus)
+    ? (row.status as WhitelistApplicationStatus)
+    : "pending";
+  let answers: Record<string, unknown> = {};
+  if (row.answers && typeof row.answers === "object") {
+    answers = row.answers as Record<string, unknown>;
+  } else if (typeof row.answers === "string") {
+    try { answers = JSON.parse(row.answers) as Record<string, unknown>; } catch { answers = {}; }
+  }
+  return {
+    id: Number(row.id),
+    guildId: row.guild_id,
+    userId: row.user_id,
+    channelId: row.channel_id ?? "",
+    appNumber: Number(row.app_number ?? 0),
+    status,
+    answers,
+    currentQuestion: Number(row.current_question ?? 0),
+    reviewedBy: row.reviewed_by ?? "",
+    reviewNote: row.review_note ?? "",
+    startedAt: toNullableIso(row.started_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 function rowToExtendedConfig(row: ExtendedGuildConfigRow): ExtendedGuildConfig {
   return {
     guildId: row.guild_id,
@@ -503,6 +566,9 @@ function rowToTicket(row: TicketRow): Ticket {
     createdAt: toIso(row.created_at),
     closedAt: row.closed_at ? toIso(row.closed_at) : null,
     closeReason: row.close_reason ?? "",
+    claimedStaff: Array.isArray(row.claimed_staff)
+      ? (row.claimed_staff as unknown[]).map((x) => String(x))
+      : [],
   };
 }
 
@@ -528,7 +594,7 @@ export class BotStorePostgres {
   async list(): Promise<Bot[]> {
     await this.ensureReady();
     const result = await this.pool.query<BotRow>(
-      `SELECT id, name, token, commands, is_active, created_at, updated_at
+      `SELECT id, name, token, image_data, commands, is_active, created_at, updated_at
        FROM bots ORDER BY created_at DESC`
     );
     return result.rows.map(rowToBot);
@@ -560,7 +626,7 @@ export class BotStorePostgres {
   async getById(id: string): Promise<Bot | null> {
     await this.ensureReady();
     const result = await this.pool.query<BotRow>(
-      `SELECT id, name, token, commands, is_active, created_at, updated_at
+      `SELECT id, name, token, image_data, commands, is_active, created_at, updated_at
        FROM bots WHERE id = $1 LIMIT 1`,
       [id]
     );
@@ -573,7 +639,7 @@ export class BotStorePostgres {
     const result = await this.pool.query<BotRow>(
       `INSERT INTO bots (id, name, token, token_hash, commands, is_active, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-       RETURNING id, name, token, commands, is_active, created_at, updated_at`,
+       RETURNING id, name, token, image_data, commands, is_active, created_at, updated_at`,
       [input.id, input.name, encryptSecret(input.token, env.BOT_TOKEN_ENC_KEY), tokenHash(input.token),
        JSON.stringify(input.commands), input.isActive, input.createdAt, input.updatedAt]
     );
@@ -588,9 +654,20 @@ export class BotStorePostgres {
       `UPDATE bots
        SET name=$2, token=$3, token_hash=$4, commands=$5::jsonb, is_active=$6, updated_at=now()
        WHERE id=$1
-       RETURNING id, name, token, commands, is_active, created_at, updated_at`,
+       RETURNING id, name, token, image_data, commands, is_active, created_at, updated_at`,
       [id, input.name, encryptSecret(input.token, env.BOT_TOKEN_ENC_KEY), tokenHash(input.token),
        JSON.stringify(input.commands), input.isActive]
+    );
+    const row = result.rows[0];
+    return row ? rowToBot(row) : null;
+  }
+
+  async updateImage(id: string, imageData: string): Promise<Bot | null> {
+    await this.ensureReady();
+    const result = await this.pool.query<BotRow>(
+      `UPDATE bots SET image_data=$2, updated_at=now() WHERE id=$1
+       RETURNING id, name, token, image_data, commands, is_active, created_at, updated_at`,
+      [id, imageData]
     );
     const row = result.rows[0];
     return row ? rowToBot(row) : null;
@@ -600,7 +677,7 @@ export class BotStorePostgres {
     await this.ensureReady();
     const result = await this.pool.query<BotRow>(
       `UPDATE bots SET updated_at=now() WHERE id=$1
-       RETURNING id, name, token, commands, is_active, created_at, updated_at`,
+       RETURNING id, name, token, image_data, commands, is_active, created_at, updated_at`,
       [id]
     );
     const row = result.rows[0];
@@ -774,6 +851,24 @@ export class BotStorePostgres {
     return result.rows.map(rowToWhitelistQuestion);
   }
 
+  async listWhitelistApplications(botId: string): Promise<WhitelistApplication[]> {
+    await this.ensureReady();
+    // Aplicações vivem em public.allowlist_applications (sem bot_id);
+    // posse verificada via guild_configs (site schema, search_path).
+    const result = await this.pool.query<WhitelistApplicationRow>(
+      `SELECT a.id, a.guild_id, a.user_id, a.channel_id, a.app_number, a.status,
+              a.answers, a.current_question, a.reviewed_by, a.review_note,
+              a.started_at, a.created_at, a.updated_at
+       FROM public.allowlist_applications a
+       WHERE EXISTS (SELECT 1 FROM guild_configs gc
+                     WHERE gc.guild_id = a.guild_id AND gc.bot_id = $1)
+       ORDER BY a.updated_at DESC
+       LIMIT 500`,
+      [botId]
+    );
+    return result.rows.map(rowToWhitelistApplication);
+  }
+
   async saveWhitelistQuestions(
     botId: string,
     questions: Array<{
@@ -874,21 +969,63 @@ export class BotStorePostgres {
     );
   }
 
-  async listTickets(guildId: string, botId: string, limit = 50): Promise<Ticket[]> {
+  async listTickets(guildId: string, botId: string, claimedBy?: string): Promise<Ticket[]> {
     await this.ensureReady();
-    const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));
-    // Só lista tickets se o guild pertence a este bot (guild_configs.bot_id).
-    // public.tickets não tem bot_id, então a posse é verificada via guild_configs.
+    // Posse verificada via guild_configs (public.tickets não tem bot_id).
+    // claimedBy: filtra os tickets reivindicados por aquele usuário Discord.
+    const params: unknown[] = [guildId, botId];
+    let claimedClause = "";
+    if (claimedBy) {
+      params.push(JSON.stringify([claimedBy]));
+      claimedClause = `AND t.claimed_staff @> $${params.length}::jsonb`;
+    }
     const result = await this.pool.query<TicketRow>(
       `SELECT id, guild_id, channel_id, user_id, ticket_number, category, status,
-              COALESCE(dm_notify, true) AS dm_notify, created_at, closed_at, close_reason
+              claimed_staff, COALESCE(dm_notify, true) AS dm_notify, created_at, closed_at, close_reason
        FROM public.tickets t
        WHERE t.guild_id=$1
          AND EXISTS (SELECT 1 FROM guild_configs gc WHERE gc.guild_id=$1 AND gc.bot_id=$2)
-       ORDER BY t.created_at DESC LIMIT $3`,
-      [guildId, botId, bounded]
+         ${claimedClause}
+       ORDER BY t.created_at DESC LIMIT 200`,
+      params
     );
     return result.rows.map(rowToTicket);
+  }
+
+  /** Reivindica (designa) um ticket para um usuário Discord: adiciona ao
+   *  claimed_staff e marca status='claimed'. Posse via guild_configs.bot_id. */
+  async claimTicket(ticketId: number, discordId: string, botId: string): Promise<void> {
+    await this.ensureReady();
+    await this.pool.query(
+      `UPDATE public.tickets t
+       SET claimed_staff = CASE WHEN t.claimed_staff @> $2::jsonb
+                                THEN t.claimed_staff ELSE t.claimed_staff || $2::jsonb END,
+           status = CASE WHEN t.status='closed' THEN t.status ELSE 'claimed' END
+       WHERE t.id=$1
+         AND EXISTS (SELECT 1 FROM guild_configs gc WHERE gc.guild_id=t.guild_id AND gc.bot_id=$3)`,
+      [ticketId, JSON.stringify([discordId]), botId]
+    );
+  }
+
+  async listTicketMessages(ticketId: number, botId: string): Promise<TicketMessage[]> {
+    await this.ensureReady();
+    const result = await this.pool.query<TicketMessageRow>(
+      `SELECT m.id, m.author_id, m.author_name, m.content, m.attachments, m.created_at
+       FROM public.ticket_messages m
+       JOIN public.tickets t ON t.id = m.ticket_id
+       WHERE m.ticket_id = $1
+         AND EXISTS (SELECT 1 FROM guild_configs gc WHERE gc.guild_id=t.guild_id AND gc.bot_id=$2)
+       ORDER BY m.created_at ASC`,
+      [ticketId, botId]
+    );
+    return result.rows.map((r) => ({
+      id: String(r.id),
+      authorId: r.author_id,
+      authorName: r.author_name ?? "",
+      content: r.content ?? "",
+      attachments: r.attachments ?? "",
+      createdAt: toIso(r.created_at),
+    }));
   }
 
   async getTicket(ticketId: number): Promise<Ticket | null> {
@@ -912,6 +1049,7 @@ export class BotStorePostgres {
     await this.pool.query("SELECT 1");
     await this.runQuery(CREATE_BOTS_TABLE_DDL);
     await this.runQuery(ALTER_BOTS_TOKEN_HASH_DDL);
+    await this.runQuery(ALTER_BOTS_IMAGE_DDL);
     await this.runQuery(CREATE_BOTS_TOKEN_HASH_INDEX_DDL);
     await this.runQuery(CREATE_BOT_LOGS_TABLE_DDL);
     await this.runQuery(CREATE_BOT_STATUS_TABLE_DDL);

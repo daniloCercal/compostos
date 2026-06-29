@@ -23,12 +23,17 @@ import { createPostgresBotService } from "./modules/bot/bot-service";
 import { createAuditMiddleware } from "./middleware/audit";
 import { AuditStorePostgres } from "./modules/audit/audit-store-postgres";
 import { createAuditRouter } from "./modules/audit/audit-router";
+import { createVerificationRouter } from "./modules/verification/verification-router";
+import { DiscordOauthStore } from "./modules/discord-oauth/discord-oauth-store";
+import { createDiscordOauthAdminRouter } from "./modules/discord-oauth/discord-oauth-router";
+import { createDiscordOauthFlowRouter } from "./modules/discord-oauth/discord-oauth-flow-router";
 
 const app = express();
 const botService = createPostgresBotService(env.DATABASE_URL);
 const adminUserStore = new AdminUserStorePostgres(env.DATABASE_URL);
 const lucia = createLucia(adminUserStore.getPool());
 const auditStore = new AuditStorePostgres(adminUserStore.getPool());
+const discordOauthStore = new DiscordOauthStore(adminUserStore.getPool());
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
@@ -72,7 +77,11 @@ app.get(["/api/health", "/health"], (_req, res) => {
   });
 });
 
-const authRouter = createAuthRouter(adminUserStore, lucia);
+// Verificação por captcha — público (consumido por auth.daniloc.work via rewrite
+// do Vercel, que mapeia /api/* -> api.daniloc.work/*). Sem sessão/CSRF.
+app.use(["/api", "/"], createVerificationRouter(adminUserStore.getPool()));
+
+const authRouter = createAuthRouter(adminUserStore, lucia, auditStore);
 
 function createAdminProtectedRouter(): express.Router {
   const adminProtectedRouter = express.Router();
@@ -85,6 +94,7 @@ function createAdminProtectedRouter(): express.Router {
   adminProtectedRouter.use("/bots", createBotAdminRouter(botService));
   adminProtectedRouter.use("/users", createUsersRouter(adminUserStore));
   adminProtectedRouter.use("/audit", createAuditRouter(auditStore));
+  adminProtectedRouter.use("/discord-login", createDiscordOauthAdminRouter(discordOauthStore));
   return adminProtectedRouter;
 }
 
@@ -92,6 +102,10 @@ function createAdminProtectedRouter(): express.Router {
 // atende os dois prefixos (evita montar a árvore de rotas duas vezes).
 const adminProtectedRouter = createAdminProtectedRouter();
 app.use(["/api/admin", "/admin"], authRouter);
+app.use(
+  ["/api/admin", "/admin"],
+  createDiscordOauthFlowRouter(discordOauthStore, adminUserStore, lucia, botService)
+);
 app.use(["/api/admin", "/admin"], adminProtectedRouter);
 
 if (isProduction) {

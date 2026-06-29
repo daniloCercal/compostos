@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +12,13 @@ import (
 	"github.com/yourorg/rp-bot/internal/bot"
 	"github.com/yourorg/rp-bot/internal/db"
 )
+
+// randomToken gera um token opaco para o endpoint de verificação por captcha.
+func randomToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 type Verification struct{ b *bot.Bot }
 
@@ -47,11 +56,11 @@ func (v *Verification) StatsCommand() *discordgo.ApplicationCommand {
 }
 
 func (v *Verification) Verify(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	ctx, cancel := v.b.OpContext(15 * time.Second); defer cancel()
+	ctx, cancel := v.b.OpContext(15 * time.Second)
+	defer cancel()
 	guildID := i.GuildID
 	userID := i.Member.User.ID
 
-	// ACK imediato: atribuir cargo é uma chamada REST que pode passar dos 3s.
 	if !deferEphemeral(s, i) {
 		return
 	}
@@ -62,46 +71,41 @@ func (v *Verification) Verify(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	cfg, err := v.b.DB.GetGuildConfig(ctx, guildID)
-	if err != nil {
-		editResponse(s, i, "Configuration not set up. Contact an admin.")
-		return
-	}
-
-	maxAttempts := v.b.Cfg.VerificationMaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 5
-	}
-	since := time.Now().Add(-24 * time.Hour)
-	count, err := v.b.DB.CountVerificationAttempts(ctx, guildID, userID, since)
-	if err == nil && count >= maxAttempts {
-		editResponse(s, i, "You have reached the verification attempt limit. Try again tomorrow.")
+	if err != nil || cfg.VerifiedRoleID == "" {
+		editResponse(s, i, "Verificação não configurada. Contate um admin.")
 		return
 	}
 
 	for _, r := range i.Member.Roles {
 		if r == cfg.VerifiedRoleID {
-			editResponse(s, i, "You are already verified.")
+			editResponse(s, i, "✅ Autenticação já realizada.")
 			return
 		}
 	}
 
-	err = s.GuildMemberRoleAdd(guildID, userID, cfg.VerifiedRoleID)
-	success := err == nil
-	_ = v.b.LogDBErr("InsertVerificationAttempt", v.b.DB.InsertVerificationAttempt(ctx, &db.VerificationAttempt{
-		GuildID: guildID,
-		UserID:  userID,
-		Success: success,
-	}))
-
-	bot.MetricVerifications.WithLabelValues(boolLabel(success), guildID).Inc()
-
-	if !success {
-		editResponse(s, i, fmt.Sprintf("Failed to assign verified role: %v", err))
+	// Gera um token único e cria a verificação pendente; o usuário resolve o
+	// captcha em auth.daniloc.work/v/<token> e o cargo é dado pela ação verify_captcha.
+	token := randomToken()
+	if err := v.b.DB.CreateCaptchaVerification(ctx, token, guildID, userID, i.Member.User.Username); err != nil {
+		editResponse(s, i, "Erro ao iniciar a verificação. Tente novamente.")
 		return
 	}
 
-	v.persistResult(ctx, s, i, cfg)
-	editResponse(s, i, "You have been verified! Welcome.")
+	link := "https://auth.daniloc.work/v/" + token
+
+	if dm, dmErr := s.UserChannelCreate(userID); dmErr == nil {
+		_, sendErr := s.ChannelMessageSendEmbed(dm.ID, &discordgo.MessageEmbed{
+			Title:       "🔐 Verificação",
+			Description: "Para liberar seu acesso, abra o link abaixo, resolva o captcha e pronto:\n\n" + link + "\n\n_O link expira em 20 minutos._",
+			Color:       0x2563EB,
+		})
+		if sendErr == nil {
+			editResponse(s, i, "📬 Te enviei um link de verificação no **privado (DM)**. Resolva o captcha por lá.")
+			return
+		}
+	}
+
+	editResponse(s, i, "Não consegui te enviar DM (privado fechado?). Resolva por aqui:\n"+link)
 }
 
 func (v *Verification) persistResult(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, cfg *db.GuildConfig) {

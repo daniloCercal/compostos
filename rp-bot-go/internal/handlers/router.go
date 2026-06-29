@@ -88,6 +88,10 @@ func Register(b *bot.Bot) ([]*discordgo.ApplicationCommand, func(ctx context.Con
 				t.HandleCloseButton(s, i)
 			case strings.HasPrefix(customID, "ticket:claim:"):
 				t.HandleClaimButton(s, i)
+			case strings.HasPrefix(customID, "ticket:unclaim:"):
+				t.HandleUnclaimButton(s, i)
+			case strings.HasPrefix(customID, "ticket:add:"):
+				t.HandleAddButton(s, i)
 			case strings.HasPrefix(customID, "ticket:dm_toggle:"):
 				t.HandleDmToggleButton(s, i)
 			case customID == "whitelist:start_button":
@@ -103,6 +107,8 @@ func Register(b *bot.Bot) ([]*discordgo.ApplicationCommand, func(ctx context.Con
 			switch {
 			case strings.HasPrefix(customID, "ticket:close_reason_modal:"):
 				t.HandleCloseModal(s, i)
+			case strings.HasPrefix(customID, "ticket:add_modal:"):
+				t.HandleAddModal(s, i)
 			}
 		}
 	})

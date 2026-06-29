@@ -1,0 +1,18 @@
+[Unit]
+Description=Composto S - Discord bot (rp-bot-go)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=zkazuh
+Group=zkazuh
+EnvironmentFile=/etc/composto-bot.env
+ExecStart=/usr/local/bin/composto-bot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,9 @@ import { clearCsrfToken, requestJson, setCsrfToken } from './client'
 import type {
   AdminRole,
   AdminUser,
+  AuditEntry,
+  DiscordOauthConfig,
+  DiscordRoleMapping,
   AdminUserInput,
   AdminUserUpdate,
   Bot,
@@ -20,13 +23,17 @@ import type {
   PanelEmbedConfig,
   SessionResponse,
   Ticket,
+  TicketMessage,
   WhitelistQuestion,
+  WhitelistApplication,
+  WhitelistApplicationStatus,
 } from '../types'
 
 interface BotApiItem {
   id: string
   name: string
   token?: string
+  image?: string
   commands?: unknown
   isActive?: boolean
   is_active?: boolean
@@ -103,6 +110,7 @@ function normalizeBot(item: BotApiItem): Bot {
     id: item.id,
     name: item.name,
     token: item.token ?? '',
+    image: item.image ?? '',
     commands: normalizeBotCommands(item.commands),
     isActive: item.isActive ?? item.is_active ?? false,
     createdAt: item.createdAt ?? item.created_at ?? '',
@@ -411,6 +419,16 @@ export async function updateBotIdentity(
   return normalizeBotDiscordUser(response.user ?? {})
 }
 
+/** Salva a imagem do bot no painel (data URI). Não toca no Discord. */
+export async function saveBotImage(botId: string, image: string): Promise<Bot> {
+  await ensureCsrfToken()
+  const response = await requestJson<{ bot: BotApiItem }>(
+    `/api/admin/bots/${encodeURIComponent(botId)}/image`,
+    { method: 'PUT', body: { image } },
+  )
+  return normalizeBot(response.bot)
+}
+
 export async function updateGuildNickname(botId: string, guildId: string, nick: string): Promise<void> {
   await ensureCsrfToken()
   await requestJson<{ ok: true }>(
@@ -455,6 +473,7 @@ interface AdminUserApiItem {
   botIds?: string[]
   bot_ids?: string[]
   scope?: 'all' | 'assigned'
+  image?: string
 }
 
 function normalizeAdminUser(item: AdminUserApiItem): AdminUser {
@@ -466,6 +485,7 @@ function normalizeAdminUser(item: AdminUserApiItem): AdminUser {
     isActive: item.isActive ?? item.is_active ?? true,
     botIds: item.botIds ?? item.bot_ids ?? [],
     scope: item.scope ?? 'assigned',
+    image: item.image ?? '',
   }
 }
 
@@ -493,6 +513,61 @@ export async function updateUser(id: string, input: AdminUserUpdate): Promise<Ad
     { method: 'PUT', body: input },
   )
   return normalizeAdminUser(response.user)
+}
+
+/** Salva a foto de perfil de um usuário admin (data URI). */
+export async function saveUserImage(userId: string, image: string): Promise<void> {
+  await ensureCsrfToken()
+  await requestJson<{ ok: true }>(
+    `/api/admin/users/${encodeURIComponent(userId)}/image`,
+    { method: 'PUT', body: { image } },
+  )
+}
+
+/** Público: a tela de login usa pra decidir se mostra o botão "Entrar com Discord". */
+export async function getDiscordLoginStatus(): Promise<{ enabled: boolean }> {
+  return requestJson(`/api/admin/auth/discord/status`, { method: 'GET', skipCsrf: true })
+}
+
+// --- Login com Discord (config, admin/CEO) ---
+
+export async function getDiscordLoginConfig(): Promise<{ config: DiscordOauthConfig; mappings: DiscordRoleMapping[] }> {
+  return requestJson(`/api/admin/discord-login/config`, { method: 'GET', skipCsrf: true })
+}
+
+export async function updateDiscordLoginConfig(
+  input: { clientId?: string; clientSecret?: string; enabled?: boolean },
+): Promise<{ config: DiscordOauthConfig }> {
+  await ensureCsrfToken()
+  return requestJson(`/api/admin/discord-login/config`, { method: 'PUT', body: input })
+}
+
+export async function addDiscordRoleMapping(
+  input: { guildId: string; roleId: string; roleName: string; panelRole: 'admin' | 'user' },
+): Promise<{ mappings: DiscordRoleMapping[] }> {
+  await ensureCsrfToken()
+  return requestJson(`/api/admin/discord-login/mappings`, { method: 'POST', body: input })
+}
+
+export async function removeDiscordRoleMapping(id: string): Promise<{ mappings: DiscordRoleMapping[] }> {
+  await ensureCsrfToken()
+  return requestJson(`/api/admin/discord-login/mappings/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+/** Logs de auditoria (CEO-only). category: all|auth|users|bots|audit|other. */
+export async function listAuditLog(
+  params: { limit?: number; offset?: number; category?: string; q?: string } = {},
+): Promise<{ items: AuditEntry[]; total: number }> {
+  const qs = new URLSearchParams()
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.offset != null) qs.set('offset', String(params.offset))
+  if (params.category && params.category !== 'all') qs.set('category', params.category)
+  if (params.q && params.q.trim()) qs.set('q', params.q.trim())
+  const query = qs.toString()
+  return requestJson<{ items: AuditEntry[]; total: number }>(
+    `/api/admin/audit${query ? `?${query}` : ''}`,
+    { method: 'GET', skipCsrf: true },
+  )
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -560,6 +635,74 @@ export async function saveWhitelistQuestions(
     { method: 'PUT', body: { questions } },
   )
   return (response.questions ?? []).map(normalizeWhitelistQuestion)
+}
+
+// ---------------------------------------------------------------------------
+// Whitelist applications
+// ---------------------------------------------------------------------------
+
+interface WhitelistApplicationApiItem {
+  id?: number | string
+  guildId?: string
+  guild_id?: string
+  userId?: string
+  user_id?: string
+  channelId?: string
+  channel_id?: string
+  appNumber?: number
+  app_number?: number
+  status?: string
+  answers?: unknown
+  currentQuestion?: number
+  current_question?: number
+  reviewedBy?: string
+  reviewed_by?: string
+  reviewNote?: string
+  review_note?: string
+  startedAt?: string | null
+  started_at?: string | null
+  createdAt?: string
+  created_at?: string
+  updatedAt?: string
+  updated_at?: string
+}
+
+const WHITELIST_APP_STATUSES: WhitelistApplicationStatus[] = [
+  'pending', 'theory_passed', 'approved', 'rejected', 'cancelled', 'timed_out',
+]
+
+function normalizeWhitelistApplication(item: WhitelistApplicationApiItem): WhitelistApplication {
+  const rawStatus = item.status ?? 'pending'
+  const status = WHITELIST_APP_STATUSES.includes(rawStatus as WhitelistApplicationStatus)
+    ? (rawStatus as WhitelistApplicationStatus)
+    : 'pending'
+  const rawAnswers = item.answers
+  const answers = rawAnswers && typeof rawAnswers === 'object'
+    ? (rawAnswers as Record<string, unknown>)
+    : {}
+  return {
+    id: Number(item.id ?? 0),
+    guildId: item.guildId ?? item.guild_id ?? '',
+    userId: item.userId ?? item.user_id ?? '',
+    channelId: item.channelId ?? item.channel_id ?? '',
+    appNumber: item.appNumber ?? item.app_number ?? 0,
+    status,
+    answers,
+    currentQuestion: item.currentQuestion ?? item.current_question ?? 0,
+    reviewedBy: item.reviewedBy ?? item.reviewed_by ?? '',
+    reviewNote: item.reviewNote ?? item.review_note ?? '',
+    startedAt: item.startedAt ?? item.started_at ?? null,
+    createdAt: item.createdAt ?? item.created_at ?? '',
+    updatedAt: item.updatedAt ?? item.updated_at ?? '',
+  }
+}
+
+export async function listWhitelistApplications(botId: string): Promise<WhitelistApplication[]> {
+  const response = await requestJson<{ applications?: WhitelistApplicationApiItem[] }>(
+    `/api/admin/bots/${encodeURIComponent(botId)}/whitelist-applications`,
+    { method: 'GET', skipCsrf: true },
+  )
+  return (response.applications ?? []).map(normalizeWhitelistApplication)
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +816,8 @@ interface TicketApiItem {
   closed_at?: string | null
   closeReason?: string
   close_reason?: string
+  claimedStaff?: string[]
+  claimed_staff?: string[]
 }
 
 function normalizeTicket(item: TicketApiItem): Ticket {
@@ -688,6 +833,7 @@ function normalizeTicket(item: TicketApiItem): Ticket {
     createdAt: item.createdAt ?? item.created_at ?? '',
     closedAt: item.closedAt ?? item.closed_at ?? null,
     closeReason: item.closeReason ?? item.close_reason ?? '',
+    claimedStaff: item.claimedStaff ?? item.claimed_staff ?? [],
   }
 }
 
@@ -725,6 +871,22 @@ export async function addUserToTicket(
   await requestJson<{ ok: true }>(
     `/api/admin/bots/${encodeURIComponent(botId)}/guilds/${encodeURIComponent(guildId)}/tickets/${ticketId}/add-user`,
     { method: 'POST', body: { channelId, userId } },
+  )
+}
+
+export async function listTicketMessages(botId: string, guildId: string, ticketId: number): Promise<TicketMessage[]> {
+  const response = await requestJson<{ messages?: TicketMessage[] }>(
+    `/api/admin/bots/${encodeURIComponent(botId)}/guilds/${encodeURIComponent(guildId)}/tickets/${ticketId}/messages`,
+    { method: 'GET', skipCsrf: true },
+  )
+  return response.messages ?? []
+}
+
+export async function claimTicket(botId: string, guildId: string, ticketId: number): Promise<void> {
+  await ensureCsrfToken()
+  await requestJson<{ ok: true }>(
+    `/api/admin/bots/${encodeURIComponent(botId)}/guilds/${encodeURIComponent(guildId)}/tickets/${ticketId}/claim`,
+    { method: 'POST' },
   )
 }
 

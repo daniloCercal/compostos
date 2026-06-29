@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Activity, LogOut, Menu, X, Users, ClipboardList, Megaphone, Ticket, Settings } from 'lucide-react'
+import { Bot, Activity, LogOut, Menu, X, Users, ClipboardList, Megaphone, Ticket, Settings, ScrollText, KeyRound } from 'lucide-react'
 
-import { ensureCsrfToken, getAdminSession, loginAdmin, logoutAdmin } from './api/admin'
+import { ensureCsrfToken, getAdminSession, listBots, loginAdmin, logoutAdmin } from './api/admin'
 import { ApiError, clearCsrfToken } from './api/client'
 import { LoginPanel } from './components/LoginPanel'
 import { BotsView } from './views/BotsView'
@@ -12,6 +12,8 @@ import { WhitelistView } from './views/WhitelistView'
 import { BotConfigView } from './views/BotConfigView'
 import { AnnouncementsView } from './views/AnnouncementsView'
 import { TicketManagerView } from './views/TicketManagerView'
+import { LogsView } from './views/LogsView'
+import { DiscordLoginView } from './views/DiscordLoginView'
 import type { SessionResponse } from './types'
 
 function extractError(error: unknown): string {
@@ -20,7 +22,7 @@ function extractError(error: unknown): string {
   return 'erro inesperado'
 }
 
-type ActiveView = 'bots' | 'status' | 'users' | 'whitelist' | 'config' | 'announcements' | 'tickets'
+type ActiveView = 'bots' | 'status' | 'users' | 'whitelist' | 'config' | 'announcements' | 'tickets' | 'logs' | 'discord-login'
 
 const ROLE_LABEL: Record<string, string> = {
   ceo: 'CEO',
@@ -93,6 +95,17 @@ function ModernShell({ session, onLogout, isLoggingOut }: ShellProps) {
   const user = session?.user
   const permissions = session?.permissions
 
+  // Branding: um usuário não-CEO com acesso a UM único bot vê o nome + logo
+  // desse bot no lugar da marca padrão "zKazuh".
+  const botsQuery = useQuery({
+    queryKey: ['bots'],
+    queryFn: listBots,
+    enabled: Boolean(permissions?.canViewBots),
+  })
+  const accessibleBots = botsQuery.data ?? []
+  const brandBot = user?.role !== 'ceo' && accessibleBots.length === 1 ? accessibleBots[0] : null
+  const brandName = brandBot ? brandBot.name : 'zKazuh'
+
   const ALL_NAV_ITEMS: { view: ActiveView; icon: typeof Bot; label: string; sub: string; visible: boolean }[] = [
     { view: 'bots', icon: Bot, label: 'Bots', sub: 'Gerenciar bots', visible: Boolean(permissions?.canViewBots) },
     { view: 'status', icon: Activity, label: 'Status', sub: 'Monitorar runtime', visible: Boolean(permissions?.canViewBots) },
@@ -101,6 +114,8 @@ function ModernShell({ session, onLogout, isLoggingOut }: ShellProps) {
     { view: 'announcements', icon: Megaphone, label: 'Avisos', sub: 'Enviar comunicados', visible: Boolean(permissions?.canUpdateBots) },
     { view: 'tickets', icon: Ticket, label: 'Tickets', sub: 'Gerenciar suporte', visible: Boolean(permissions?.canViewBots) },
     { view: 'users', icon: Users, label: 'Usuários', sub: 'Controle de acesso', visible: Boolean(permissions?.canManageUsers) },
+    { view: 'logs', icon: ScrollText, label: 'Logs', sub: 'Auditoria de acesso', visible: user?.role === 'ceo' },
+    { view: 'discord-login', icon: KeyRound, label: 'Login Discord', sub: 'Acesso via Discord', visible: Boolean(permissions?.canManageUsers) },
   ]
 
   const NAV_ITEMS = ALL_NAV_ITEMS.filter((n) => n.visible)
@@ -144,10 +159,14 @@ function ModernShell({ session, onLogout, isLoggingOut }: ShellProps) {
         `}
       >
         <div className="flex items-center gap-3 px-5 py-5 border-b border-zinc-800">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-md shadow-blue-600/30 shrink-0">
-            <Bot className="w-4 h-4 text-white" />
+          <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center shadow-md shadow-blue-600/30 shrink-0 bg-blue-600">
+            {brandBot && brandBot.image ? (
+              <img src={brandBot.image} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <Bot className="w-4 h-4 text-white" />
+            )}
           </div>
-          <span className="font-semibold text-zinc-100 text-sm">zKazuh</span>
+          <span className="font-semibold text-zinc-100 text-sm truncate">{brandName}</span>
           <button
             type="button"
             onClick={() => setSidebarOpen(false)}
@@ -242,6 +261,8 @@ function ModernShell({ session, onLogout, isLoggingOut }: ShellProps) {
           {activeView === 'config' ? <BotConfigView session={session} /> : null}
           {activeView === 'announcements' ? <AnnouncementsView session={session} /> : null}
           {activeView === 'tickets' ? <TicketManagerView session={session} /> : null}
+          {activeView === 'logs' ? <LogsView session={session} /> : null}
+          {activeView === 'discord-login' ? <DiscordLoginView session={session} /> : null}
         </main>
       </div>
     </div>

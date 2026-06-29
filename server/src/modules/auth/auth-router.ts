@@ -10,6 +10,7 @@ import {
 } from "../../middleware/auth";
 import type { AdminUserStorePostgres } from "./admin-user-store-postgres";
 import type { AppLucia } from "./lucia";
+import type { AuditStorePostgres } from "../audit/audit-store-postgres";
 import { randomToken } from "../../utils/crypto";
 
 const loginSchema = z.object({
@@ -58,11 +59,45 @@ function toSessionResponse(
 
 export function createAuthRouter(
   store: AdminUserStorePostgres,
-  lucia: AppLucia
+  lucia: AppLucia,
+  auditStore: AuditStorePostgres
 ): Router {
   const router = express.Router();
   const withOptionalAdminSession = createWithOptionalAdminSession(lucia);
   const requireAdminSession = createRequireAdminSession(lucia);
+
+  // Registra eventos de autenticação no audit_log (categoria "auth").
+  function recordAuth(
+    req: express.Request,
+    userId: string | null,
+    userEmail: string | null,
+    userRole: string | null,
+    path: string,
+    status: number
+  ): void {
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip =
+      (Array.isArray(forwarded) ? forwarded[0] : forwarded)
+        ?.toString()
+        .split(",")[0]
+        ?.trim() ||
+      req.ip ||
+      null;
+    void auditStore
+      .record({
+        userId,
+        userEmail,
+        userRole,
+        method: req.method,
+        path,
+        statusCode: status,
+        durationMs: 0,
+        ip,
+        userAgent: req.get("user-agent") ?? null,
+        category: "auth",
+      })
+      .catch(() => {});
+  }
 
   router.post("/login", loginLimiter, async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -78,6 +113,7 @@ export function createAuthRouter(
         payload.data.password
       );
       if (!principal) {
+        recordAuth(req, null, payload.data.email, null, "/api/admin/login", 401);
         res.status(401).json({ error: "credenciais invalidas" });
         return;
       }
@@ -90,6 +126,7 @@ export function createAuthRouter(
       res.appendHeader("Set-Cookie", cookie.serialize());
 
       await store.recordLogin(principal.id);
+      recordAuth(req, principal.id, principal.email, principal.role, "/api/admin/login", 200);
       res.status(200).json({ ok: true });
     } catch (error) {
       next(error);
@@ -100,11 +137,21 @@ export function createAuthRouter(
     res.setHeader("Cache-Control", "no-store");
     try {
       const sessionId = lucia.readSessionCookie(req.headers.cookie ?? "");
+      let uid: string | null = null;
+      let uemail: string | null = null;
+      let urole: string | null = null;
       if (sessionId) {
+        const { user } = await lucia.validateSession(sessionId);
+        if (user) {
+          uid = user.id;
+          uemail = user.email;
+          urole = user.role;
+        }
         await lucia.invalidateSession(sessionId);
       }
       const blank = lucia.createBlankSessionCookie();
       res.appendHeader("Set-Cookie", blank.serialize());
+      recordAuth(req, uid, uemail, urole, "/api/admin/logout", 200);
       res.status(200).json({ ok: true });
     } catch (error) {
       next(error);

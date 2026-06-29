@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, Shield, User, Crown } from 'lucide-react'
-import { createUser, deleteUser, listBots, listUsers, updateUser } from '../api/admin'
+import { Plus, Pencil, Trash2, Shield, User, Crown, Upload } from 'lucide-react'
+import { createUser, deleteUser, listBots, listUsers, saveUserImage, updateUser } from '../api/admin'
 import { ApiError } from '../api/client'
 import type { AdminRole, AdminUser, Bot, SessionResponse } from '../types'
 
@@ -45,6 +45,79 @@ const emptyForm: UserFormState = {
   role: 'user',
   botIds: [],
   isActive: true,
+}
+
+function resizeToDataUri(file: File, size = 256): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Falha ao ler o arquivo.'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('Arquivo de imagem inválido.'))
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          reject(new Error('Canvas indisponível.'))
+          return
+        }
+        const min = Math.min(img.width, img.height)
+        ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      img.src = reader.result as string
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function UserAvatarCell({ user }: { user: AdminUser }) {
+  const queryClient = useQueryClient()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const saveMutation = useMutation({
+    mutationFn: (dataUri: string) => saveUserImage(user.id, dataUri),
+    onSuccess: () => {
+      setError(null)
+      void queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Falha ao enviar.'),
+  })
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const dataUri = await resizeToDataUri(file)
+      saveMutation.mutate(dataUri)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Falha ao processar a imagem.')
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => inputRef.current?.click()}
+      disabled={saveMutation.isPending}
+      title={error ?? 'Trocar foto de perfil'}
+      className={`relative w-8 h-8 rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center shrink-0 group disabled:opacity-60 ${error ? 'ring-1 ring-red-500' : ''}`}
+    >
+      {user.image ? (
+        <img src={user.image} alt="" className="w-full h-full object-cover" />
+      ) : (
+        <span className="text-xs font-semibold text-zinc-300">{user.displayName.charAt(0).toUpperCase()}</span>
+      )}
+      <span className="absolute inset-0 bg-black/55 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+        <Upload className="w-3 h-3 text-white" />
+      </span>
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+    </button>
+  )
 }
 
 interface UsersViewProps {
@@ -251,11 +324,7 @@ export function UsersView({ session }: UsersViewProps) {
                   <tr key={user.id} className={`${isSelf ? 'bg-zinc-800/20' : ''}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
-                          <span className="text-xs font-semibold text-zinc-300">
-                            {user.displayName.charAt(0).toUpperCase()}
-                          </span>
-                        </div>
+                        <UserAvatarCell user={user} />
                         <div>
                           <p className="font-medium text-zinc-100">
                             {user.displayName}

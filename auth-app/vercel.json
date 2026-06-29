@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://api.daniloc.work/api/:path*" },
+    { "source": "/v/:token", "destination": "/index.html" }
+  ]
+}

@@ -7,6 +7,7 @@ export interface Bot {
   id: string;
   name: string;
   token: string;
+  image: string;
   commands: BotCommand[];
   isActive: boolean;
   createdAt: string;
@@ -71,6 +72,7 @@ export interface AdminPrincipal {
   displayName: string;
   role: AdminRole;
   isActive: boolean;
+  image: string;
   botIds: string[];
   scope: "all" | "assigned";
   permissions: AdminPermissions;
@@ -179,4 +181,38 @@ export interface Ticket {
   createdAt: string;
   closedAt: string | null;
   closeReason: string;
+  claimedStaff: string[];
+}
+
+export interface TicketMessage {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  attachments: string;
+  createdAt: string;
+}
+
+export type WhitelistApplicationStatus =
+  | "pending"
+  | "theory_passed"
+  | "approved"
+  | "rejected"
+  | "cancelled"
+  | "timed_out";
+
+export interface WhitelistApplication {
+  id: number;
+  guildId: string;
+  userId: string;
+  channelId: string;
+  appNumber: number;
+  status: WhitelistApplicationStatus;
+  answers: Record<string, unknown>;
+  currentQuestion: number;
+  reviewedBy: string;
+  reviewNote: string;
+  startedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

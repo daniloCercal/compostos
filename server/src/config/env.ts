@@ -26,7 +26,10 @@ const envSchema = z.object({
     }
     return value;
   }, z.boolean()),
-  DATABASE_CA_CERT: z.string().trim().optional()
+  DATABASE_CA_CERT: z.string().trim().optional(),
+  // Secret do Cloudflare Turnstile (validação server-side do captcha de verificação).
+  // Use a chave de teste `1x0000000000000000000000000000000AA` em dev.
+  TURNSTILE_SECRET: z.string().trim().optional()
 });
 
 const parsed = envSchema.safeParse(process.env);

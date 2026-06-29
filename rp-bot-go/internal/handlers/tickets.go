@@ -161,37 +161,273 @@ func (t *Tickets) createTicket(ctx context.Context, s *discordgo.Session, guildI
 	ticket.ID = ticketID
 	t.cache.Add(ch.ID, services.ChannelTicket)
 
-	// Embed de abertura do ticket
-	embed := buildEmbed(
-		color,
-		fmt.Sprintf("Ticket #%04d — %s", num, strings.Title(category)),
-		fmt.Sprintf("Olá <@%s>! A equipe estará com você em breve.\n\nCategoria: **%s**", userID, strings.Title(category)),
-		ext.TicketImageURL,
-	)
-
+	// Mensagem de gestão do ticket: embed com todas as infos + 4 botões.
+	embed := buildManagementEmbed(ticket, color)
+	if ext.TicketImageURL != "" {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: ext.TicketImageURL}
+	}
 	_, _ = s.ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Components: []discordgo.MessageComponent{
-			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Fechar",
-					Style:    discordgo.DangerButton,
-					CustomID: fmt.Sprintf("ticket:close:%d", ticketID),
-				},
-				discordgo.Button{
-					Label:    "Assumir",
-					Style:    discordgo.SuccessButton,
-					CustomID: fmt.Sprintf("ticket:claim:%d", ticketID),
-				},
-				discordgo.Button{
-					Label:    dmNotifyLabel(ext.DmNotifyDefault),
-					Style:    dmNotifyStyle(ext.DmNotifyDefault),
-					CustomID: fmt.Sprintf("ticket:dm_toggle:%d", ticketID),
-				},
-			}},
-		},
+		Content:    fmt.Sprintf("Olá <@%s>! A equipe estará com você em breve.", userID),
+		Embeds:     []*discordgo.MessageEmbed{embed},
+		Components: managementComponents(ticketID),
 	})
 	return ch, nil
+}
+
+// buildManagementEmbed monta o embed "Gestão do ticket" com todas as infos.
+func buildManagementEmbed(ticket *db.Ticket, color int) *discordgo.MessageEmbed {
+	status := "🟢 Aberto"
+	if ticket.Status == "closed" {
+		status = "🔴 Fechado"
+	}
+	resp := "_Ninguém ainda_"
+	if len(ticket.ClaimedStaff) > 0 {
+		parts := make([]string, 0, len(ticket.ClaimedStaff))
+		for _, e := range ticket.ClaimedStaff {
+			parts = append(parts, "<@"+e.UserID+">")
+		}
+		resp = strings.Join(parts, ", ")
+	}
+	category := ticket.Category
+	if category == "" {
+		category = "geral"
+	}
+	return &discordgo.MessageEmbed{
+		Title: fmt.Sprintf("Gestão do ticket #%04d", ticket.TicketNumber),
+		Color: color,
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Status", Value: status, Inline: true},
+			{Name: "Categoria", Value: category, Inline: true},
+			{Name: "Canal", Value: "<#" + ticket.ChannelID + ">", Inline: true},
+			{Name: "Criador", Value: "<@" + ticket.UserID + ">", Inline: true},
+			{Name: "Criado em", Value: fmt.Sprintf("<t:%d:f>", ticket.CreatedAt.Unix()), Inline: true},
+			{Name: "Responsáveis", Value: resp, Inline: false},
+		},
+	}
+}
+
+// managementComponents retorna a linha com os 4 botões de gestão.
+func managementComponents(ticketID int64) []discordgo.MessageComponent {
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+			discordgo.Button{Label: "Assumir", Style: discordgo.SuccessButton, CustomID: fmt.Sprintf("ticket:claim:%d", ticketID)},
+			discordgo.Button{Label: "Desassumir", Style: discordgo.SecondaryButton, CustomID: fmt.Sprintf("ticket:unclaim:%d", ticketID)},
+			discordgo.Button{Label: "Adicionar", Style: discordgo.PrimaryButton, CustomID: fmt.Sprintf("ticket:add:%d", ticketID)},
+			discordgo.Button{Label: "Fechar", Style: discordgo.DangerButton, CustomID: fmt.Sprintf("ticket:close:%d", ticketID)},
+		}},
+	}
+}
+
+// refreshManagementMessage re-renderiza o embed de gestão na mensagem do botão.
+func (t *Tickets) refreshManagementMessage(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, ticket *db.Ticket) {
+	if i.Message == nil {
+		return
+	}
+	ext := t.b.DB.GetExtendedConfig(ctx, ticket.GuildID)
+	embed := buildManagementEmbed(ticket, embedColor(ext.EmbedColor))
+	if ext.TicketImageURL != "" {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: ext.TicketImageURL}
+	}
+	embeds := []*discordgo.MessageEmbed{embed}
+	_, _ = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Channel: i.Message.ChannelID,
+		ID:      i.Message.ID,
+		Embeds:  &embeds,
+	})
+}
+
+// isTicketAdmin: membro tem o cargo de admin configurado (ou permissão admin do Discord).
+func isTicketAdmin(member *discordgo.Member, cfg *db.GuildConfig) bool {
+	if member == nil {
+		return false
+	}
+	if cfg != nil && cfg.AdminRoleID != "" {
+		for _, r := range member.Roles {
+			if r == cfg.AdminRoleID {
+				return true
+			}
+		}
+		return false
+	}
+	return member.Permissions&discordgo.PermissionAdministrator != 0
+}
+
+// isClaimer: membro está entre os responsáveis do ticket.
+func isClaimer(member *discordgo.Member, ticket *db.Ticket) bool {
+	if member == nil {
+		return false
+	}
+	for _, e := range ticket.ClaimedStaff {
+		if e.UserID == member.User.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// extractUserID extrai o ID de uma menção (<@id>, <@!id>) ou de um ID cru.
+func extractUserID(input string) string {
+	v := strings.TrimSpace(input)
+	v = strings.TrimPrefix(v, "<@")
+	v = strings.TrimPrefix(v, "!")
+	v = strings.TrimSuffix(v, ">")
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return v
+}
+
+// HandleUnclaimButton — botão Desassumir.
+func (t *Tickets) HandleUnclaimButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	ctx, cancel := t.b.OpContext(15 * time.Second)
+	defer cancel()
+	idStr := parseIDSuffix(i.MessageComponentData().CustomID, "ticket:unclaim:")
+	ticket, err := t.b.DB.GetTicketByID(ctx, mustInt64(idStr))
+	if err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Ticket não encontrado."))
+		return
+	}
+	userID := i.Member.User.ID
+	filtered := make([]db.ClaimedStaffEntry, 0, len(ticket.ClaimedStaff))
+	for _, e := range ticket.ClaimedStaff {
+		if e.UserID != userID {
+			filtered = append(filtered, e)
+		}
+	}
+	if len(filtered) == len(ticket.ClaimedStaff) {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Você não assumiu este ticket."))
+		return
+	}
+	if err := t.b.DB.UpdateTicketClaimedStaff(ctx, ticket.ID, filtered); err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Erro no banco."))
+		return
+	}
+	ticket.ClaimedStaff = filtered
+	t.refreshManagementMessage(ctx, s, i, ticket)
+	_ = s.InteractionRespond(i.Interaction, ephemeral(fmt.Sprintf("Você deixou de ser responsável pelo ticket #%04d.", ticket.TicketNumber)))
+}
+
+// HandleAddButton — botão Adicionar (só admin). Abre modal pedindo o usuário.
+func (t *Tickets) HandleAddButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	ctx, cancel := t.b.OpContext(15 * time.Second)
+	defer cancel()
+	idStr := parseIDSuffix(i.MessageComponentData().CustomID, "ticket:add:")
+	ticket, err := t.b.DB.GetTicketByID(ctx, mustInt64(idStr))
+	if err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Ticket não encontrado."))
+		return
+	}
+	cfg, _ := t.b.DB.GetGuildConfig(ctx, ticket.GuildID)
+	if !isTicketAdmin(i.Member, cfg) {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Apenas um admin pode adicionar usuários ao ticket."))
+		return
+	}
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseModal,
+		Data: &discordgo.InteractionResponseData{
+			CustomID: "ticket:add_modal:" + idStr,
+			Title:    "Adicionar ao ticket",
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+					discordgo.TextInput{CustomID: "user", Label: "ID ou menção do usuário",
+						Style: discordgo.TextInputShort, Required: true, Placeholder: "123456789012345678"},
+				}},
+			},
+		},
+	})
+}
+
+// HandleAddModal adiciona o usuário ao canal do ticket.
+func (t *Tickets) HandleAddModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ModalSubmitData()
+	idStr := parseIDSuffix(data.CustomID, "ticket:add_modal:")
+	userID := extractUserID(modalField(data, "user"))
+	ctx, cancel := t.b.OpContext(15 * time.Second)
+	defer cancel()
+	ticket, err := t.b.DB.GetTicketByID(ctx, mustInt64(idStr))
+	if err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Ticket não encontrado."))
+		return
+	}
+	if userID == "" {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Usuário inválido. Use o ID ou uma menção."))
+		return
+	}
+	if err := s.ChannelPermissionSet(ticket.ChannelID, userID, discordgo.PermissionOverwriteTypeMember,
+		discordgo.PermissionViewChannel|discordgo.PermissionSendMessages, 0); err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Não foi possível adicionar: "+err.Error()))
+		return
+	}
+	_ = s.InteractionRespond(i.Interaction, ephemeral(fmt.Sprintf("<@%s> adicionado ao ticket.", userID)))
+	_, _ = s.ChannelMessageSend(ticket.ChannelID, fmt.Sprintf("<@%s> foi adicionado ao ticket por <@%s>.", userID, i.Member.User.ID))
+}
+
+// sendTranscript gera um .md das mensagens e envia ao canal de log e (se DM ligado) ao dono.
+func (t *Tickets) sendTranscript(ctx context.Context, s *discordgo.Session, ticket *db.Ticket, reason string) {
+	msgs, err := t.b.DB.ListTicketMessages(ctx, ticket.ID)
+	if err != nil {
+		return
+	}
+	category := ticket.Category
+	if category == "" {
+		category = "geral"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Ticket #%04d — %s\n\n", ticket.TicketNumber, category))
+	sb.WriteString(fmt.Sprintf("- **Criador:** %s\n", ticket.UserID))
+	sb.WriteString(fmt.Sprintf("- **Aberto em:** %s\n", ticket.CreatedAt.Format("2006-01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("- **Fechado em:** %s\n", time.Now().Format("2006-01-02 15:04")))
+	if reason != "" {
+		sb.WriteString(fmt.Sprintf("- **Motivo:** %s\n", reason))
+	}
+	if len(ticket.ClaimedStaff) > 0 {
+		ids := make([]string, 0, len(ticket.ClaimedStaff))
+		for _, e := range ticket.ClaimedStaff {
+			ids = append(ids, e.UserID)
+		}
+		sb.WriteString("- **Responsáveis:** " + strings.Join(ids, ", ") + "\n")
+	}
+	sb.WriteString("\n---\n\n## Mensagens\n\n")
+	if len(msgs) == 0 {
+		sb.WriteString("_Sem mensagens registradas._\n")
+	}
+	for _, m := range msgs {
+		author := m.AuthorName
+		if author == "" {
+			author = m.AuthorID
+		}
+		sb.WriteString(fmt.Sprintf("**%s** · %s\n\n", author, m.CreatedAt.Format("2006-01-02 15:04:05")))
+		if m.Content != "" {
+			sb.WriteString(m.Content + "\n\n")
+		}
+		if m.Attachments != "" {
+			sb.WriteString("_[anexos: " + m.Attachments + "]_\n\n")
+		}
+	}
+	content := sb.String()
+	fileName := fmt.Sprintf("ticket-%04d.md", ticket.TicketNumber)
+
+	cfg, _ := t.b.DB.GetGuildConfig(ctx, ticket.GuildID)
+	if cfg != nil && cfg.TicketLogChannelID != "" {
+		_, _ = s.ChannelMessageSendComplex(cfg.TicketLogChannelID, &discordgo.MessageSend{
+			Content: fmt.Sprintf("📄 Transcript do ticket #%04d", ticket.TicketNumber),
+			Files:   []*discordgo.File{{Name: fileName, ContentType: "text/markdown", Reader: strings.NewReader(content)}},
+		})
+	}
+	if ticket.DmNotify {
+		if dm, e := s.UserChannelCreate(ticket.UserID); e == nil {
+			_, _ = s.ChannelMessageSendComplex(dm.ID, &discordgo.MessageSend{
+				Content: fmt.Sprintf("Transcript do seu ticket #%04d:", ticket.TicketNumber),
+				Files:   []*discordgo.File{{Name: fileName, ContentType: "text/markdown", Reader: strings.NewReader(content)}},
+			})
+		}
+	}
 }
 
 func (t *Tickets) HandleDmToggleButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -270,10 +506,23 @@ func (t *Tickets) TicketClose(s *discordgo.Session, i *discordgo.InteractionCrea
 }
 
 func (t *Tickets) HandleCloseButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	idStr := parseIDSuffix(i.MessageComponentData().CustomID, "ticket:close:")
+	ctx, cancel := t.b.OpContext(15 * time.Second)
+	defer cancel()
+	ticket, err := t.b.DB.GetTicketByID(ctx, mustInt64(idStr))
+	if err != nil {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Ticket não encontrado."))
+		return
+	}
+	cfg, _ := t.b.DB.GetGuildConfig(ctx, ticket.GuildID)
+	if !isClaimer(i.Member, ticket) && !isTicketAdmin(i.Member, cfg) {
+		_ = s.InteractionRespond(i.Interaction, ephemeral("Apenas quem assumiu ou um admin pode fechar o ticket."))
+		return
+	}
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseModal,
 		Data: &discordgo.InteractionResponseData{
-			CustomID: "ticket:close_reason_modal:" + parseIDSuffix(i.MessageComponentData().CustomID, "ticket:close:"),
+			CustomID: "ticket:close_reason_modal:" + idStr,
 			Title:    "Fechar Ticket",
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{Components: []discordgo.MessageComponent{
@@ -305,6 +554,8 @@ func (t *Tickets) closeTicketImpl(ctx context.Context, s *discordgo.Session, i *
 		return
 	}
 	t.cache.Remove(ticket.ChannelID)
+	// Gera e envia o transcript .md (canal de log + DM do dono, se habilitado).
+	t.sendTranscript(ctx, s, ticket, reason)
 	cfg, _ := t.b.DB.GetGuildConfig(ctx, ticket.GuildID)
 	if cfg != nil && cfg.TicketLogChannelID != "" {
 		actorID := ""
@@ -380,7 +631,8 @@ func (t *Tickets) claimTicketImpl(ctx context.Context, s *discordgo.Session, i *
 		_ = s.InteractionRespond(i.Interaction, ephemeral("DB error."))
 		return
 	}
-	_ = s.InteractionRespond(i.Interaction, ephemeral(fmt.Sprintf("Assumiu o ticket #%04d.", ticket.TicketNumber)))
+	t.refreshManagementMessage(ctx, s, i, ticket)
+	_ = s.InteractionRespond(i.Interaction, ephemeral(fmt.Sprintf("Você assumiu o ticket #%04d.", ticket.TicketNumber)))
 }
 
 func (t *Tickets) TicketUnclaim(s *discordgo.Session, i *discordgo.InteractionCreate) {

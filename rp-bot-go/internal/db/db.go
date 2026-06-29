@@ -284,6 +284,26 @@ func (p *Pool) InsertTicketMessage(ctx context.Context, m *TicketMessage) error 
 	return err
 }
 
+// ListTicketMessages retorna o histórico de mensagens de um ticket (para transcript).
+func (p *Pool) ListTicketMessages(ctx context.Context, ticketID int64) ([]TicketMessage, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, ticket_id, author_id, author_name, content, attachments, created_at
+		FROM ticket_messages WHERE ticket_id=$1 ORDER BY created_at ASC`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TicketMessage
+	for rows.Next() {
+		var m TicketMessage
+		if err := rows.Scan(&m.ID, &m.TicketID, &m.AuthorID, &m.AuthorName, &m.Content, &m.Attachments, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // Allowlist applications
 // ---------------------------------------------------------------------------
@@ -411,6 +431,16 @@ func (p *Pool) FinalizeApplicationReview(ctx context.Context, id int64, status, 
 // Bot status heartbeat (site schema — escrito pelo bot, lido pelo painel)
 // ---------------------------------------------------------------------------
 
+// CreateCaptchaVerification cria uma verificação pendente em site.captcha_verifications.
+// O usuário resolve o captcha em auth.daniloc.work/v/<token>; o backend marca
+// verificado e enfileira a ação verify_captcha que dá o cargo.
+func (p *Pool) CreateCaptchaVerification(ctx context.Context, token, guildID, userID, username string) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO site.captcha_verifications (token, guild_id, user_id, username) VALUES ($1, $2, $3, $4)`,
+		token, guildID, userID, username)
+	return err
+}
+
 // ResolveBotID resolve o UUID do bot na tabela site.bots pelo token Discord.
 func (p *Pool) ResolveBotID(ctx context.Context, token string) (string, error) {
 	// Lookup primário por hash determinístico (a coluna `token` pode estar
@@ -444,6 +474,28 @@ func (p *Pool) UpsertBotStatus(ctx context.Context, botID string, startedAt time
 			guilds_count = EXCLUDED.guilds_count`,
 		botID, startedAt, int(latencyMs), guildsCount)
 	return err
+}
+
+// ClearRestartRequest zera o pedido de restart. Chamado no startup: o bot acabou
+// de (re)iniciar, então qualquer pedido anterior já foi honrado. Imune a skew de
+// relógio (não compara timestamps).
+func (p *Pool) ClearRestartRequest(ctx context.Context, botID string) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE site.bot_status SET restart_requested_at = NULL WHERE bot_id = $1`, botID)
+	return err
+}
+
+// IsRestartRequested retorna true se o painel marcou restart_requested_at depois
+// que o bot subiu (após o ClearRestartRequest do startup) — ou seja, pedido novo.
+func (p *Pool) IsRestartRequested(ctx context.Context, botID string) (bool, error) {
+	var requested bool
+	err := p.pool.QueryRow(ctx,
+		`SELECT restart_requested_at IS NOT NULL FROM site.bot_status WHERE bot_id = $1`,
+		botID).Scan(&requested)
+	if err != nil {
+		return false, err
+	}
+	return requested, nil
 }
 
 // SetBotOffline marca o bot como offline em public.bot_status (chamado no

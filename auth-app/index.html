@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Verificação</title>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: #09090b; color: #e4e4e7; padding: 24px;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      .card {
+        width: 100%; max-width: 400px; background: #18181b; border: 1px solid #27272a;
+        border-radius: 16px; padding: 32px 28px; text-align: center;
+      }
+      .logo {
+        width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 12px;
+        background: #2563eb; display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 8px 24px -8px rgba(37,99,235,.6);
+      }
+      .logo svg { width: 24px; height: 24px; color: #fff; }
+      h1 { font-size: 18px; margin: 0 0 6px; color: #fafafa; }
+      p { font-size: 14px; color: #a1a1aa; margin: 0 0 22px; line-height: 1.5; }
+      .cf-turnstile { display: flex; justify-content: center; min-height: 65px; }
+      #status { margin-top: 18px; font-size: 14px; font-weight: 500; min-height: 20px; }
+      #status.pending { color: #a1a1aa; }
+      #status.ok { color: #34d399; }
+      #status.err { color: #f87171; }
+      .foot { margin-top: 22px; font-size: 12px; color: #52525b; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <h1>Verificação</h1>
+      <p id="msg">Resolva o desafio abaixo para confirmar que você não é um robô e liberar seu acesso.</p>
+      <div id="cf-holder"></div>
+      <div id="status"></div>
+      <div class="foot">Powered by Composto · Cloudflare Turnstile</div>
+    </div>
+
+    <script>
+      // Sitekey do Cloudflare Turnstile (publico).
+      var SITEKEY = "0x4AAAAAADr_R3zAtM6NCg3j";
+
+      var parts = location.pathname.split("/").filter(Boolean);
+      var token = parts[0] === "v" ? parts[1] : null;
+
+      var statusEl = document.getElementById("status");
+      var msgEl = document.getElementById("msg");
+      var holder = document.getElementById("cf-holder");
+
+      function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+      if (!token) {
+        msgEl.textContent = "Link de verificação inválido ou incompleto.";
+      } else {
+        var w = document.createElement("div");
+        w.className = "cf-turnstile";
+        w.setAttribute("data-sitekey", SITEKEY);
+        w.setAttribute("data-callback", "onSolve");
+        w.setAttribute("data-theme", "dark");
+        holder.appendChild(w);
+
+        window.onSolve = async function (cfToken) {
+          setStatus("Verificando…", "pending");
+          try {
+            var r = await fetch("/api/verify-submit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: token, cfToken: cfToken }),
+            });
+            var data = {};
+            try { data = await r.json(); } catch (e) {}
+            if (r.ok) {
+              msgEl.textContent = "Pronto!";
+              setStatus("✓ Verificado! Pode voltar ao Discord — seu cargo será liberado em instantes.", "ok");
+            } else {
+              setStatus("✗ " + (data.error || "Falha na verificação."), "err");
+              if (window.turnstile) turnstile.reset();
+            }
+          } catch (e) {
+            setStatus("✗ Erro de conexão. Tente novamente.", "err");
+            if (window.turnstile) turnstile.reset();
+          }
+        };
+      }
+    </script>
+  </body>
+</html>

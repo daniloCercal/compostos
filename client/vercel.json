@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://admin-panel-server-seven.vercel.app/:path*"
+      "destination": "https://api.daniloc.work/:path*"
     }
   ]
 }

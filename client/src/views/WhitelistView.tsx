@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, GripVertical, Save, CheckCircle } from 'lucide-react'
-import { listBots, listWhitelistQuestions, saveWhitelistQuestions } from '../api/admin'
+import { Plus, Trash2, GripVertical, Save, CheckCircle, Clock, XCircle, RefreshCw, FileText, Inbox } from 'lucide-react'
+import { listBots, listWhitelistQuestions, saveWhitelistQuestions, listWhitelistApplications } from '../api/admin'
 import { ApiError } from '../api/client'
-import type { SessionResponse, WhitelistQuestion } from '../types'
+import type { SessionResponse, WhitelistQuestion, WhitelistApplication, WhitelistApplicationStatus } from '../types'
 
 function extractError(error: unknown): string {
   if (error instanceof ApiError) return error.message
@@ -55,6 +55,10 @@ export function WhitelistView({ session }: WhitelistViewProps) {
   const [drafts, setDrafts] = useState<QuestionDraft[] | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [grabEnabled, setGrabEnabled] = useState(false)
+  const [tab, setTab] = useState<'questions' | 'applications'>('questions')
 
   const permissions = session?.permissions
   const canEdit = Boolean(permissions?.canUpdateBots)
@@ -74,6 +78,13 @@ export function WhitelistView({ session }: WhitelistViewProps) {
 
   const serverQuestions = questionsQuery.data ?? []
   const activeDrafts: QuestionDraft[] = drafts ?? serverQuestions.map(toDraft)
+
+  const applicationsQuery = useQuery({
+    queryKey: ['whitelist-applications', selectedBotId ?? 'none'],
+    queryFn: () => selectedBotId ? listWhitelistApplications(selectedBotId) : Promise.resolve([]),
+    enabled: Boolean(selectedBotId) && tab === 'applications',
+  })
+  const applications = applicationsQuery.data ?? []
 
   const saveMutation = useMutation({
     mutationFn: ({ botId, qs }: { botId: string; qs: QuestionDraft[] }) =>
@@ -128,6 +139,33 @@ export function WhitelistView({ session }: WhitelistViewProps) {
     }))
   }
 
+  function reorderDrafts(from: number, to: number) {
+    if (from === to) return
+    const next = [...activeDrafts]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setDrafts(next)
+  }
+
+  function handleDragStart(index: number) {
+    setDragIndex(index)
+    setOverIndex(index)
+  }
+
+  function handleDragEnter(index: number) {
+    if (dragIndex === null) return
+    setOverIndex(index)
+  }
+
+  function handleDragEnd() {
+    if (dragIndex !== null && overIndex !== null) {
+      reorderDrafts(dragIndex, overIndex)
+    }
+    setDragIndex(null)
+    setOverIndex(null)
+    setGrabEnabled(false)
+  }
+
   function handleSave() {
     if (!selectedBotId) return
     setError(null)
@@ -161,6 +199,13 @@ export function WhitelistView({ session }: WhitelistViewProps) {
 
   const isDirty = drafts !== null
   const inputCls = 'w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500/60 focus:outline-none text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm disabled:opacity-50'
+
+  // Mapa campo-chave -> texto da pergunta, para exibir respostas legíveis.
+  const questionLabels = new Map(serverQuestions.map((q) => [q.fieldKey, q.questionText]))
+
+  const inProgress = applications.filter((a) => a.status === 'pending' || a.status === 'theory_passed')
+  const approved = applications.filter((a) => a.status === 'approved')
+  const rejected = applications.filter((a) => a.status === 'rejected' || a.status === 'cancelled' || a.status === 'timed_out')
 
   return (
     <div className="p-6 space-y-6">
@@ -200,8 +245,52 @@ export function WhitelistView({ session }: WhitelistViewProps) {
         )}
       </div>
 
-      {/* Questions editor */}
+      {/* Tabs */}
       {selectedBotId && (
+        <div className="flex items-center gap-1 border-b border-zinc-800">
+          <button
+            type="button"
+            onClick={() => setTab('questions')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === 'questions'
+                ? 'border-blue-500 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            Perguntas
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('applications')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === 'applications'
+                ? 'border-blue-500 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            <Inbox className="w-4 h-4" />
+            Aplicações
+          </button>
+        </div>
+      )}
+
+      {/* Applications board */}
+      {selectedBotId && tab === 'applications' && (
+        <ApplicationsBoard
+          isLoading={applicationsQuery.isLoading}
+          isError={applicationsQuery.isError}
+          isFetching={applicationsQuery.isFetching}
+          onRefresh={() => applicationsQuery.refetch()}
+          inProgress={inProgress}
+          approved={approved}
+          rejected={rejected}
+          questionLabels={questionLabels}
+        />
+      )}
+
+      {/* Questions editor */}
+      {selectedBotId && tab === 'questions' && (
         <div className="space-y-4">
           {feedback && (
             <div className="px-4 py-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-sm text-emerald-400">
@@ -235,10 +324,36 @@ export function WhitelistView({ session }: WhitelistViewProps) {
               ) : (
                 <div className="space-y-3">
                   {activeDrafts.map((q, index) => (
-                    <div key={q.tempId} className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <div
+                      key={q.tempId}
+                      draggable={canEdit && grabEnabled}
+                      onDragStart={() => handleDragStart(index)}
+                      onDragEnter={() => handleDragEnter(index)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDragEnd={handleDragEnd}
+                      onDrop={(e) => e.preventDefault()}
+                      className={`bg-zinc-900 rounded-xl border p-4 transition-colors ${
+                        dragIndex === index
+                          ? 'border-blue-500/60 opacity-60'
+                          : overIndex === index && dragIndex !== null
+                            ? 'border-blue-500/40'
+                            : 'border-zinc-800'
+                      }`}
+                    >
                       <div className="flex items-start gap-3">
                         <div className="flex items-center gap-2 pt-1 text-zinc-600">
-                          <GripVertical className="w-4 h-4" />
+                          <button
+                            type="button"
+                            disabled={!canEdit}
+                            onMouseDown={() => setGrabEnabled(true)}
+                            onMouseUp={() => setGrabEnabled(false)}
+                            onTouchStart={() => setGrabEnabled(true)}
+                            onTouchEnd={() => setGrabEnabled(false)}
+                            title="Arraste para reordenar"
+                            className="touch-none cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 disabled:cursor-not-allowed disabled:hover:text-zinc-600"
+                          >
+                            <GripVertical className="w-4 h-4" />
+                          </button>
                           <span className="text-xs font-mono text-zinc-500 w-5 text-center">{index + 1}</span>
                         </div>
 
@@ -396,6 +511,173 @@ export function WhitelistView({ session }: WhitelistViewProps) {
                 </div>
               )}
             </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Applications board
+// ---------------------------------------------------------------------------
+
+const STATUS_META: Record<WhitelistApplicationStatus, { label: string; badge: string }> = {
+  pending:       { label: 'Em andamento', badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
+  theory_passed: { label: 'Teórica aprovada', badge: 'bg-blue-500/15 text-blue-400 border-blue-500/30' },
+  approved:      { label: 'Aprovado', badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
+  rejected:      { label: 'Reprovado', badge: 'bg-red-500/15 text-red-400 border-red-500/30' },
+  cancelled:     { label: 'Cancelado', badge: 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40' },
+  timed_out:     { label: 'Expirado', badge: 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40' },
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+interface ApplicationsBoardProps {
+  isLoading: boolean
+  isError: boolean
+  isFetching: boolean
+  onRefresh: () => void
+  inProgress: WhitelistApplication[]
+  approved: WhitelistApplication[]
+  rejected: WhitelistApplication[]
+  questionLabels: Map<string, string>
+}
+
+function ApplicationsBoard({ isLoading, isError, isFetching, onRefresh, inProgress, approved, rejected, questionLabels }: ApplicationsBoardProps) {
+  if (isLoading) {
+    return <div className="text-sm text-zinc-500 text-center py-8">Carregando aplicações...</div>
+  }
+  if (isError) {
+    return (
+      <div className="px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+        Não foi possível carregar as aplicações.
+      </div>
+    )
+  }
+
+  const total = inProgress.length + approved.length + rejected.length
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-zinc-500">
+          {total} {total === 1 ? 'aplicação' : 'aplicações'} no total
+        </p>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={isFetching}
+          className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+          Atualizar
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <ApplicationColumn
+          title="Em andamento"
+          icon={<Clock className="w-4 h-4 text-amber-400" />}
+          accent="border-t-amber-500/40"
+          apps={inProgress}
+          questionLabels={questionLabels}
+        />
+        <ApplicationColumn
+          title="Aprovado"
+          icon={<CheckCircle className="w-4 h-4 text-emerald-400" />}
+          accent="border-t-emerald-500/40"
+          apps={approved}
+          questionLabels={questionLabels}
+        />
+        <ApplicationColumn
+          title="Reprovado"
+          icon={<XCircle className="w-4 h-4 text-red-400" />}
+          accent="border-t-red-500/40"
+          apps={rejected}
+          questionLabels={questionLabels}
+        />
+      </div>
+    </div>
+  )
+}
+
+interface ApplicationColumnProps {
+  title: string
+  icon: ReactNode
+  accent: string
+  apps: WhitelistApplication[]
+  questionLabels: Map<string, string>
+}
+
+function ApplicationColumn({ title, icon, accent, apps, questionLabels }: ApplicationColumnProps) {
+  return (
+    <div className={`bg-zinc-900/50 rounded-xl border border-zinc-800 border-t-2 ${accent} p-3 space-y-3`}>
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2 text-sm font-semibold text-zinc-200">
+          {icon}
+          {title}
+        </div>
+        <span className="text-xs font-mono text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5">{apps.length}</span>
+      </div>
+      {apps.length === 0 ? (
+        <div className="text-xs text-zinc-600 text-center py-6">Nenhuma aplicação.</div>
+      ) : (
+        <div className="space-y-2">
+          {apps.map((app) => (
+            <ApplicationCard key={app.id} app={app} questionLabels={questionLabels} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ApplicationCard({ app, questionLabels }: { app: WhitelistApplication; questionLabels: Map<string, string> }) {
+  const [open, setOpen] = useState(false)
+  const meta = STATUS_META[app.status]
+  const answerEntries = Object.entries(app.answers ?? {})
+
+  return (
+    <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="w-full text-left">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-medium text-zinc-100">
+            #{app.appNumber || app.id}
+          </span>
+          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${meta.badge}`}>
+            {meta.label}
+          </span>
+        </div>
+        <p className="text-xs text-zinc-500 mt-1 font-mono truncate">ID: {app.userId}</p>
+        <p className="text-[11px] text-zinc-600 mt-0.5">{formatDate(app.updatedAt || app.createdAt)}</p>
+      </button>
+
+      {open && (
+        <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
+          {answerEntries.length === 0 ? (
+            <p className="text-xs text-zinc-600">Nenhuma resposta registrada.</p>
+          ) : (
+            answerEntries.map(([key, value]) => (
+              <div key={key}>
+                <p className="text-[11px] font-medium text-zinc-500">{questionLabels.get(key) ?? key}</p>
+                <p className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{String(value)}</p>
+              </div>
+            ))
+          )}
+          {app.reviewNote && (
+            <div className="pt-1">
+              <p className="text-[11px] font-medium text-zinc-500">Nota da revisão</p>
+              <p className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{app.reviewNote}</p>
+            </div>
+          )}
+          {app.reviewedBy && (
+            <p className="text-[11px] text-zinc-600">Revisado por: <span className="font-mono">{app.reviewedBy}</span></p>
           )}
         </div>
       )}

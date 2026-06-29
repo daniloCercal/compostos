@@ -22,6 +22,10 @@ npm-debug.log*
 rp-bot-go/bot
 rp-bot-go/cmd/bot/bot
 
+# tokens locais (deploy) — NUNCA commitar
+.tokens.env
+*.token
+
 # claude code (config local/pessoal)
 .claude/settings.local.json
 

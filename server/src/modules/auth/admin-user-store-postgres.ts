@@ -18,6 +18,7 @@ type AdminUserRow = {
   password_hash: string;
   role: AdminRole;
   is_active: boolean;
+  image_data?: string | null;
 };
 
 const roleSchema = z.enum(["ceo", "admin", "user"]);
@@ -178,6 +179,7 @@ function principalFromRow(row: AdminUserRow, botIds: string[]): AdminPrincipal {
     displayName: row.display_name,
     role: row.role,
     isActive: row.is_active,
+    image: row.image_data ?? "",
     botIds: normalizedBotIds,
     scope: row.role === "ceo" ? "all" : "assigned",
     permissions: permissionsForRole(row.role),
@@ -275,6 +277,7 @@ export class AdminUserStorePostgres {
           email,
           display_name,
           password_hash,
+          image_data,
           role,
           is_active
         FROM admin_users
@@ -331,7 +334,7 @@ export class AdminUserStorePostgres {
 
     if (callerRole === "ceo") {
       const result = await this.pool.query<AdminUserRow>(
-        `SELECT id, email, display_name, password_hash, role, is_active
+        `SELECT id, email, display_name, password_hash, role, is_active, image_data
          FROM admin_users ORDER BY created_at ASC`
       );
       rows = result.rows;
@@ -341,7 +344,7 @@ export class AdminUserStorePostgres {
         return [];
       }
       const result = await this.pool.query<AdminUserRow>(
-        `SELECT DISTINCT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active
+        `SELECT DISTINCT u.id, u.email, u.display_name, u.password_hash, u.role, u.is_active, u.image_data
          FROM admin_users u
          JOIN admin_user_bot_access a ON a.user_id = u.id
          WHERE a.bot_id = ANY($1::uuid[])
@@ -357,6 +360,47 @@ export class AdminUserStorePostgres {
       principals.push(principalFromRow(row, botIds));
     }
     return principals;
+  }
+
+  async updateUserImage(userId: string, imageData: string): Promise<boolean> {
+    await this.ensureReady();
+    const result = await this.pool.query(
+      `UPDATE admin_users SET image_data=$2 WHERE id=$1`,
+      [userId, imageData]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Find-or-create de um usuário autenticado via Discord (bypass). Email sintético
+   * `discord_<id>@discord.bypass`, sem senha utilizável (hash dummy), papel vindo
+   * do mapa de cargos. Concede acesso a todos os bots atuais. Retorna o user id.
+   */
+  async provisionDiscordUser(input: {
+    discordId: string;
+    username: string;
+    role: AdminRole;
+  }): Promise<string> {
+    await this.ensureReady();
+    const email = `discord_${input.discordId}@discord.bypass`;
+    const displayName =
+      input.username.trim().slice(0, 120) || `discord:${input.discordId}`;
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO admin_users (id, email, display_name, password_hash, role, is_active)
+       VALUES ($1, $2, $3, $4, $5, true)
+       ON CONFLICT (email) DO UPDATE
+         SET display_name = EXCLUDED.display_name, role = EXCLUDED.role, is_active = true
+       RETURNING id`,
+      [createId(), email, displayName, DUMMY_PASSWORD_HASH, input.role]
+    );
+    const userId = result.rows[0]?.id;
+    if (!userId) throw new Error("falha ao provisionar usuario Discord");
+    await this.pool.query(
+      `INSERT INTO admin_user_bot_access (user_id, bot_id)
+       SELECT $1, id FROM bots ON CONFLICT DO NOTHING`,
+      [userId]
+    );
+    return userId;
   }
 
   async createUser(input: {
@@ -501,6 +545,9 @@ export class AdminUserStorePostgres {
   private async initialize(): Promise<void> {
     await this.pool.query("SELECT 1");
     await this.runInitializationQuery(CREATE_ADMIN_USERS_TABLE_DDL);
+    await this.runInitializationQuery(
+      `ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS image_data text NOT NULL DEFAULT ''`
+    );
     await this.runInitializationQuery(CREATE_ADMIN_USER_ACCESS_TABLE_DDL);
     await this.runInitializationQuery(CREATE_ADMIN_USERS_UPDATED_AT_FN_DDL);
     await this.runInitializationQuery(DROP_ADMIN_USERS_UPDATED_AT_TRIGGER_DDL);

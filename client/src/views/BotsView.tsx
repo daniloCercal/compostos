@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -10,11 +10,12 @@ import {
   ScrollText,
   X,
   Bot,
+  Upload,
   ChevronRight,
 } from 'lucide-react'
 import { z } from 'zod'
 
-import { createBot, deleteBot, listBotLogs, listBots, restartBot, updateBot } from '../api/admin'
+import { createBot, deleteBot, listBotLogs, listBots, restartBot, saveBotImage, updateBot, updateBotIdentity } from '../api/admin'
 import { ApiError } from '../api/client'
 import type { Bot as BotType, BotInput, BotLogEntry, SessionResponse } from '../types'
 
@@ -92,6 +93,105 @@ function buildPayload(form: BotFormState): { payload?: BotInput; error?: string 
       isActive: parsed.data.isActive,
     },
   }
+}
+
+/** Reduz/recorta a imagem para 256x256 PNG (data URI) — mantém o payload leve. */
+function resizeToDataUri(file: File, size = 256): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Falha ao ler o arquivo.'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('Arquivo de imagem inválido.'))
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          reject(new Error('Canvas indisponível.'))
+          return
+        }
+        const min = Math.min(img.width, img.height)
+        ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      img.src = reader.result as string
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function BotAvatarCell({ bot }: { bot: BotType }) {
+  const queryClient = useQueryClient()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const saveImageMutation = useMutation({
+    mutationFn: (dataUri: string) => saveBotImage(bot.id, dataUri),
+    onSuccess: () => {
+      setError(null)
+      void queryClient.invalidateQueries({ queryKey: ['bots'] })
+    },
+    onError: (err) => setError(extractError(err)),
+  })
+
+  const applyAvatarMutation = useMutation({
+    mutationFn: () => updateBotIdentity(bot.id, { avatarDataUri: bot.image }),
+    onError: (err) => setError(extractError(err)),
+  })
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const dataUri = await resizeToDataUri(file)
+      saveImageMutation.mutate(dataUri)
+    } catch (err) {
+      setError(extractError(err))
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2.5">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={saveImageMutation.isPending}
+        title="Trocar imagem do bot"
+        className="relative w-8 h-8 rounded-lg overflow-hidden bg-zinc-800 flex items-center justify-center shrink-0 group disabled:opacity-60"
+      >
+        {bot.image ? (
+          <img src={bot.image} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <Bot className="w-3.5 h-3.5 text-zinc-400" />
+        )}
+        <span className="absolute inset-0 bg-black/55 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+          <Upload className="w-3.5 h-3.5 text-white" />
+        </span>
+      </button>
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+      <div className="min-w-0">
+        <p className="font-medium text-zinc-200 truncate">{bot.name}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-zinc-600 font-mono">{bot.id.slice(0, 8)}…</p>
+          {bot.image ? (
+            <button
+              type="button"
+              onClick={() => applyAvatarMutation.mutate()}
+              disabled={applyAvatarMutation.isPending}
+              className="text-xs text-zinc-500 hover:text-blue-400 disabled:opacity-50 transition-colors"
+              title="Aplicar esta imagem como avatar do bot no Discord"
+            >
+              {applyAvatarMutation.isPending ? 'aplicando…' : applyAvatarMutation.isSuccess ? '✓ no Discord' : '→ aplicar no Discord'}
+            </button>
+          ) : null}
+        </div>
+        {error ? <p className="text-xs text-red-400 mt-0.5">{error}</p> : null}
+      </div>
+    </div>
+  )
 }
 
 interface BotsViewProps {
@@ -301,15 +401,7 @@ export function BotsView({ session }: BotsViewProps) {
               {bots.map((bot) => (
                 <tr key={bot.id} className="bg-zinc-950 hover:bg-zinc-900/40 transition-colors">
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-lg bg-zinc-800 flex items-center justify-center shrink-0">
-                        <Bot className="w-3.5 h-3.5 text-zinc-400" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-zinc-200">{bot.name}</p>
-                        <p className="text-xs text-zinc-600 font-mono">{bot.id.slice(0, 8)}…</p>
-                      </div>
-                    </div>
+                    <BotAvatarCell bot={bot} />
                   </td>
                   <td className="px-4 py-3 hidden sm:table-cell">
                     <span

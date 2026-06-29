@@ -88,6 +88,26 @@ export async function patchGuildNickname(
   });
 }
 
+/** Cargos de um membro numa guild (via token de bot). [] se não for membro. */
+export async function fetchGuildMemberRoles(
+  token: string,
+  guildId: string,
+  userId: string
+): Promise<string[]> {
+  assertSnowflake(guildId, "guildId");
+  assertSnowflake(userId, "userId");
+  try {
+    const res = await discordFetch(token, `/guilds/${guildId}/members/${userId}`);
+    const member = (await res.json()) as { roles?: string[] };
+    return Array.isArray(member.roles) ? member.roles : [];
+  } catch (err) {
+    if (err instanceof DiscordApiError && err.status === 404) {
+      return [];
+    }
+    throw err;
+  }
+}
+
 export function buildAvatarUrl(userId: string, avatarHash: string | null): string | null {
   if (!avatarHash) return null;
   const ext = avatarHash.startsWith("a_") ? "gif" : "png";

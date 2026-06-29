@@ -7,6 +7,7 @@ export interface Bot {
   id: string
   name: string
   token: string
+  image: string
   commands: BotCommand[]
   isActive: boolean
   createdAt: string
@@ -93,6 +94,36 @@ export interface AdminUser {
   isActive: boolean
   botIds: string[]
   scope: 'all' | 'assigned'
+  image: string
+}
+
+export interface AuditEntry {
+  id: string
+  occurredAt: string
+  category: string
+  userId: string | null
+  userEmail: string | null
+  userRole: string | null
+  method: string
+  path: string
+  statusCode: number | null
+  durationMs: number | null
+  ip: string | null
+  userAgent: string | null
+}
+
+export interface DiscordOauthConfig {
+  clientId: string
+  hasSecret: boolean
+  enabled: boolean
+}
+
+export interface DiscordRoleMapping {
+  id: string
+  guildId: string
+  roleId: string
+  roleName: string
+  panelRole: 'admin' | 'user'
 }
 
 export interface AdminUserInput {
@@ -136,6 +167,30 @@ export interface WhitelistQuestion {
   questionType: 'open' | 'quiz'
   options: string[]
   correctIndex: number
+}
+
+export type WhitelistApplicationStatus =
+  | 'pending'
+  | 'theory_passed'
+  | 'approved'
+  | 'rejected'
+  | 'cancelled'
+  | 'timed_out'
+
+export interface WhitelistApplication {
+  id: number
+  guildId: string
+  userId: string
+  channelId: string
+  appNumber: number
+  status: WhitelistApplicationStatus
+  answers: Record<string, unknown>
+  currentQuestion: number
+  reviewedBy: string
+  reviewNote: string
+  startedAt: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface GuildConfig {
@@ -193,4 +248,14 @@ export interface Ticket {
   createdAt: string
   closedAt: string | null
   closeReason: string
+  claimedStaff: string[]
+}
+
+export interface TicketMessage {
+  id: string
+  authorId: string
+  authorName: string
+  content: string
+  attachments: string
+  createdAt: string
 }

@@ -54,6 +54,27 @@ func processActions(ctx context.Context, b *bot.Bot, ps *services.PresenceServic
 				success = true
 			}
 
+		case "verify_captcha":
+			userID, _ := action.Payload["user_id"].(string)
+			if userID == "" || action.GuildID == "" {
+				result = "missing user_id or guild_id"
+				success = false
+				break
+			}
+			cfg, cErr := b.DB.GetGuildConfig(ctx, action.GuildID)
+			if cErr != nil || cfg.VerifiedRoleID == "" {
+				result = "no verified role configured"
+				success = false
+				break
+			}
+			if rErr := b.Session.GuildMemberRoleAdd(action.GuildID, userID, cfg.VerifiedRoleID); rErr != nil {
+				result = fmt.Sprintf("role add error: %v", rErr)
+				success = false
+			} else {
+				result = "verified role assigned"
+				success = true
+			}
+
 		default:
 			result = fmt.Sprintf("unknown action type: %s", action.ActionType)
 			success = false

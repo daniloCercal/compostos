@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquare, UserPlus, RefreshCw } from 'lucide-react'
-import { listBots, listBotDiscordGuilds, listTickets, sendTicketReply, addUserToTicket } from '../api/admin'
+import { MessageSquare, UserPlus, RefreshCw, UserCheck } from 'lucide-react'
+import { listBots, listBotDiscordGuilds, listTickets, sendTicketReply, addUserToTicket, listTicketMessages, claimTicket } from '../api/admin'
 import { ApiError } from '../api/client'
 import type { SessionResponse, Ticket } from '../types'
 
@@ -23,9 +23,10 @@ interface TicketRowProps {
   guildId: string
   adminName: string
   canEdit: boolean
+  myDiscordId: string | null
 }
 
-function TicketRow({ ticket, botId, guildId, adminName, canEdit }: TicketRowProps) {
+function TicketRow({ ticket, botId, guildId, adminName, canEdit, myDiscordId }: TicketRowProps) {
   const queryClient = useQueryClient()
   const [replyOpen, setReplyOpen] = useState(false)
   const [replyContent, setReplyContent] = useState('')
@@ -63,6 +64,24 @@ function TicketRow({ ticket, botId, guildId, adminName, canEdit }: TicketRowProp
     },
   })
 
+  const messagesQuery = useQuery({
+    queryKey: ['ticket-messages', botId, guildId, ticket.id],
+    queryFn: () => listTicketMessages(botId, guildId, ticket.id),
+    enabled: replyOpen,
+  })
+
+  const claimMutation = useMutation({
+    mutationFn: () => claimTicket(botId, guildId, ticket.id),
+    onSuccess: () => {
+      setRowFeedback('Ticket designado a você.')
+      setRowError(null)
+      void queryClient.invalidateQueries({ queryKey: ['tickets', botId, guildId] })
+    },
+    onError: (err) => setRowError(extractError(err)),
+  })
+
+  const claimedByMe = Boolean(myDiscordId && ticket.claimedStaff.includes(myDiscordId))
+
   return (
     <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
@@ -81,8 +100,8 @@ function TicketRow({ ticket, botId, guildId, adminName, canEdit }: TicketRowProp
           <p className="text-xs text-zinc-600 font-mono">canal: {ticket.channelId}</p>
         </div>
 
-        {canEdit && ticket.status !== 'closed' && (
-          <div className="flex gap-2 shrink-0">
+        {ticket.status !== 'closed' && (
+          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
             <button
               type="button"
               onClick={() => { setReplyOpen((v) => !v); setAddUserOpen(false) }}
@@ -91,14 +110,32 @@ function TicketRow({ ticket, botId, guildId, adminName, canEdit }: TicketRowProp
               <MessageSquare className="w-3.5 h-3.5" />
               Responder
             </button>
-            <button
-              type="button"
-              onClick={() => { setAddUserOpen((v) => !v); setReplyOpen(false) }}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-colors"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              Adicionar
-            </button>
+            {myDiscordId && !claimedByMe && (
+              <button
+                type="button"
+                onClick={() => claimMutation.mutate()}
+                disabled={claimMutation.isPending}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-colors disabled:opacity-50"
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                {claimMutation.isPending ? '...' : 'Pegar ticket'}
+              </button>
+            )}
+            {claimedByMe && (
+              <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs">
+                <UserCheck className="w-3.5 h-3.5" /> Seu
+              </span>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => { setAddUserOpen((v) => !v); setReplyOpen(false) }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                Adicionar
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -116,7 +153,27 @@ function TicketRow({ ticket, botId, guildId, adminName, canEdit }: TicketRowProp
 
       {replyOpen && (
         <div className="space-y-2 pt-1 border-t border-zinc-800">
-          <p className="text-xs font-medium text-zinc-400">Responder como <span className="text-zinc-200">{adminName}</span></p>
+          <p className="text-xs font-medium text-zinc-400">Conversa</p>
+          <div className="max-h-60 overflow-y-auto space-y-2.5 bg-zinc-950 border border-zinc-800 rounded-lg p-3">
+            {messagesQuery.isLoading ? (
+              <p className="text-xs text-zinc-600">Carregando mensagens…</p>
+            ) : (messagesQuery.data ?? []).length === 0 ? (
+              <p className="text-xs text-zinc-600">Sem mensagens registradas neste ticket.</p>
+            ) : (
+              (messagesQuery.data ?? []).map((m) => (
+                <div key={m.id} className="text-sm">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-zinc-200 font-medium">{m.authorName || m.authorId}</span>
+                    <span className="text-zinc-600 text-[11px]">{new Date(m.createdAt).toLocaleString('pt-BR')}</span>
+                  </div>
+                  <p className="text-zinc-400 whitespace-pre-wrap break-words">
+                    {m.content || (m.attachments ? '[anexo]' : '')}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+          <p className="text-xs font-medium text-zinc-400 pt-1">Responder como <span className="text-zinc-200">{adminName}</span></p>
           <textarea
             value={replyContent}
             onChange={(e) => setReplyContent(e.target.value)}
@@ -177,6 +234,10 @@ export function TicketManagerView({ session }: TicketManagerViewProps) {
   const canEdit = Boolean(permissions?.canUpdateBots)
   const sessionBotIds = session?.botIds ?? []
   const adminName = session?.user?.displayName ?? 'Admin'
+  const myDiscordId = (() => {
+    const m = /^discord_(\d+)@discord\.bypass$/.exec(session?.user?.email ?? '')
+    return m?.[1] ?? null
+  })()
 
   const botsQuery = useQuery({ queryKey: ['bots'], queryFn: listBots })
   const bots = botsQuery.data ?? []
@@ -306,6 +367,7 @@ export function TicketManagerView({ session }: TicketManagerViewProps) {
                   guildId={selectedGuildId}
                   adminName={adminName}
                   canEdit={canEdit}
+                  myDiscordId={myDiscordId}
                 />
               ))}
             </div>

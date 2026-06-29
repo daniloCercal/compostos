@@ -31,6 +31,7 @@ function toApiUser(user: {
   displayName: string;
   role: AdminRole;
   isActive: boolean;
+  image: string;
   botIds: string[];
   scope: "all" | "assigned";
 }) {
@@ -40,6 +41,7 @@ function toApiUser(user: {
     displayName: user.displayName,
     role: user.role,
     isActive: user.isActive,
+    image: user.image,
     botIds: user.botIds,
     scope: user.scope,
   };
@@ -103,6 +105,51 @@ export function createUsersRouter(store: AdminUserStorePostgres): Router {
     try {
       const users = await store.listUsers(principal.role, principal.botIds);
       res.status(200).json({ users: users.map(toApiUser) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // PUT /api/admin/users/:id/image — foto de perfil. O próprio usuário sempre
+  // pode trocar a sua; para terceiros, precisa poder gerenciar o alvo.
+  router.put("/:id/image", async (req, res, next) => {
+    const principal = getAdminPrincipal(res);
+    if (!principal) {
+      res.status(401).json({ error: "nao autorizado" });
+      return;
+    }
+    const targetId = typeof req.params.id === "string" ? req.params.id : "";
+    if (!targetId) {
+      res.status(400).json({ error: "id invalido" });
+      return;
+    }
+    if (targetId !== principal.id) {
+      if (!principal.permissions.canManageUsers) {
+        res.status(403).json({ error: "acesso negado" });
+        return;
+      }
+      const target = await loadManageableTarget(store, principal, targetId, res);
+      if (!target) return;
+    }
+    const raw = (req.body as { image?: unknown }).image;
+    const image = typeof raw === "string" ? raw.trim() : "";
+    if (image !== "") {
+      if (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(image)) {
+        res.status(400).json({ error: "imagem invalida (use PNG, JPEG, GIF ou WEBP)" });
+        return;
+      }
+      if (image.length > 300_000) {
+        res.status(413).json({ error: "imagem muito grande" });
+        return;
+      }
+    }
+    try {
+      const ok = await store.updateUserImage(targetId, image);
+      if (!ok) {
+        res.status(404).json({ error: "usuario nao encontrado" });
+        return;
+      }
+      res.status(200).json({ ok: true, image });
     } catch (error) {
       next(error);
     }

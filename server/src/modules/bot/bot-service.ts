@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { Bot, BotCommand, BotLog, BotStatus, GuildConfig, DiscordGuild, BotDiscordUser, WhitelistQuestion, ExtendedGuildConfig, DiscordRole, DiscordChannel, Ticket } from "../../types";
+import type { Bot, BotCommand, BotLog, BotStatus, GuildConfig, DiscordGuild, BotDiscordUser, WhitelistQuestion, WhitelistApplication, ExtendedGuildConfig, DiscordRole, DiscordChannel, Ticket, TicketMessage } from "../../types";
 import { fetchBotGuilds, fetchBotUser, patchBotUser, patchGuildNickname, buildAvatarUrl, buildGuildIconUrl, DiscordApiError, fetchGuildRoles, fetchGuildChannels, sendChannelMessage, createChannelPermissionOverwrite } from "../../utils/discord-api";
 import { createId, utcIsoNow } from "../../utils/id";
 import { BotStorePostgres } from "./bot-store-postgres";
@@ -72,6 +72,7 @@ interface BotStoreLike {
     }
   ): Promise<Bot | null>;
   touchUpdatedAt(id: string): Promise<Bot | null>;
+  updateImage(id: string, imageData: string): Promise<Bot | null>;
   requestRestart(botId: string): Promise<void>;
   deleteById(id: string): Promise<boolean>;
   listLogsByBot(botId: string, limit: number): Promise<BotLog[] | null>;
@@ -80,10 +81,13 @@ interface BotStoreLike {
   upsertGuildConfig(botId: string, guildId: string, fields: Omit<GuildConfig, "guildId" | "createdAt" | "updatedAt">): Promise<GuildConfig>;
   listWhitelistQuestions(botId: string): Promise<WhitelistQuestion[]>;
   saveWhitelistQuestions(botId: string, questions: Array<{ fieldKey: string; questionText: string; correctAnswer: string; orderIndex: number; questionType?: string; options?: string[]; correctIndex?: number }>): Promise<WhitelistQuestion[]>;
+  listWhitelistApplications(botId: string): Promise<WhitelistApplication[]>;
   getExtendedConfig(guildId: string, botId: string): Promise<ExtendedGuildConfig | null>;
   upsertExtendedConfig(guildId: string, botId: string, fields: Omit<ExtendedGuildConfig, "guildId">): Promise<ExtendedGuildConfig>;
   enqueueBotAction(guildId: string, actionType: string, payload: Record<string, unknown>): Promise<void>;
-  listTickets(guildId: string, botId: string, limit?: number): Promise<Ticket[]>;
+  listTickets(guildId: string, botId: string, claimedBy?: string): Promise<Ticket[]>;
+  claimTicket(ticketId: number, discordId: string, botId: string): Promise<void>;
+  listTicketMessages(ticketId: number, botId: string): Promise<TicketMessage[]>;
   getTicket(ticketId: number): Promise<Ticket | null>;
 }
 
@@ -174,6 +178,7 @@ export class BotService {
       id: createId(),
       name: parsed.name,
       token: parsed.token,
+      image: "",
       commands: parsed.commands,
       isActive: parsed.isActive,
       createdAt: now,
@@ -211,6 +216,21 @@ export class BotService {
 
   async remove(id: string): Promise<boolean> {
     return this.store.deleteById(id);
+  }
+
+  async updateImage(id: string, rawImage: unknown): Promise<Bot> {
+    const image = typeof rawImage === "string" ? rawImage.trim() : "";
+    if (image !== "") {
+      if (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(image)) {
+        throw new BotServiceError(400, "imagem invalida (use PNG, JPEG, GIF ou WEBP)");
+      }
+      if (image.length > 300_000) {
+        throw new BotServiceError(413, "imagem muito grande (reduza o tamanho)");
+      }
+    }
+    const bot = await this.store.updateImage(id, image);
+    if (!bot) throw new BotServiceError(404, "bot nao encontrado");
+    return bot;
   }
 
   async listLogs(botId: string, limit = MAX_LOG_LIMIT): Promise<BotLog[] | null> {
@@ -338,6 +358,12 @@ export class BotService {
     return this.store.saveWhitelistQuestions(botId, questions);
   }
 
+  async listWhitelistApplications(botId: string): Promise<WhitelistApplication[]> {
+    const bot = await this.store.getById(botId);
+    if (!bot) throw new BotServiceError(404, "bot nao encontrado");
+    return this.store.listWhitelistApplications(botId);
+  }
+
   async getExtendedConfig(botId: string, guildId: string): Promise<ExtendedGuildConfig | null> {
     const bot = await this.store.getById(botId);
     if (!bot) throw new BotServiceError(404, "bot nao encontrado");
@@ -426,10 +452,22 @@ export class BotService {
     }
   }
 
-  async listTickets(botId: string, guildId: string): Promise<Ticket[]> {
+  async listTickets(botId: string, guildId: string, claimedBy?: string): Promise<Ticket[]> {
     const bot = await this.store.getById(botId);
     if (!bot) throw new BotServiceError(404, "bot nao encontrado");
-    return this.store.listTickets(guildId, botId);
+    return this.store.listTickets(guildId, botId, claimedBy);
+  }
+
+  async claimTicket(botId: string, ticketId: number, discordId: string): Promise<void> {
+    const bot = await this.store.getById(botId);
+    if (!bot) throw new BotServiceError(404, "bot nao encontrado");
+    await this.store.claimTicket(ticketId, discordId, botId);
+  }
+
+  async listTicketMessages(botId: string, ticketId: number): Promise<TicketMessage[]> {
+    const bot = await this.store.getById(botId);
+    if (!bot) throw new BotServiceError(404, "bot nao encontrado");
+    return this.store.listTicketMessages(ticketId, botId);
   }
 
   async setBotPresence(

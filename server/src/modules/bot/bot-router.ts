@@ -1,6 +1,6 @@
 import express, { type Router } from "express";
 
-import type { Bot, BotLog, BotStatus, GuildConfig, WhitelistQuestion, ExtendedGuildConfig, DiscordRole, DiscordChannel, Ticket, PanelConfigs, PanelEmbedConfig } from "../../types";
+import type { Bot, BotLog, BotStatus, GuildConfig, WhitelistQuestion, WhitelistApplication, ExtendedGuildConfig, DiscordRole, DiscordChannel, Ticket, PanelConfigs, PanelEmbedConfig } from "../../types";
 import { getAdminPrincipal } from "../../middleware/auth";
 import { BotServiceError, type BotService } from "./bot-service";
 
@@ -27,6 +27,7 @@ function toApiBot(bot: Bot): Record<string, unknown> {
   return {
     id: bot.id,
     name: bot.name,
+    image: bot.image,
     commands: bot.commands,
     is_active: bot.isActive,
     created_at: bot.createdAt,
@@ -74,6 +75,24 @@ function toApiWhitelistQuestion(q: WhitelistQuestion): Record<string, unknown> {
     question_type: q.questionType,
     options: q.options,
     correct_index: q.correctIndex,
+  };
+}
+
+function toApiWhitelistApplication(a: WhitelistApplication): Record<string, unknown> {
+  return {
+    id: a.id,
+    guild_id: a.guildId,
+    user_id: a.userId,
+    channel_id: a.channelId,
+    app_number: a.appNumber,
+    status: a.status,
+    answers: a.answers,
+    current_question: a.currentQuestion,
+    reviewed_by: a.reviewedBy,
+    review_note: a.reviewNote,
+    started_at: a.startedAt,
+    created_at: a.createdAt,
+    updated_at: a.updatedAt,
   };
 }
 
@@ -136,6 +155,14 @@ function requireBotAccess(
   return botId;
 }
 
+
+// Extrai o ID Discord do email sintético dos usuários logados via Discord
+// (`discord_<id>@discord.bypass`). Retorna null para contas email/senha.
+function extractDiscordId(email: string | undefined): string | null {
+  if (!email) return null;
+  const m = /^discord_(\d+)@discord\.bypass$/.exec(email);
+  return m?.[1] ?? null;
+}
 
 export function createBotAdminRouter(service: BotService): Router {
   const router = express.Router();
@@ -404,6 +431,21 @@ export function createBotAdminRouter(service: BotService): Router {
     }
   });
 
+  // Imagem do bot armazenada no painel (data URI). Distinta do avatar do Discord
+  // (PUT /me): aqui só persiste no painel; aplicar no Discord é uma ação separada.
+  router.put("/:id/image", async (req, res, next) => {
+    const botId = requireBotAccess(req, res, "update");
+    if (!botId) return;
+    try {
+      const { image } = req.body as { image?: unknown };
+      const bot = await service.updateImage(botId, image);
+      res.status(200).json({ bot: toApiBot(bot) });
+    } catch (error) {
+      if (handleServiceError(error, res)) return;
+      next(error);
+    }
+  });
+
   router.put("/:id/guilds/:guildId/nick", async (req, res, next) => {
     const botId = requireBotAccess(req, res, "update");
     if (!botId) return;
@@ -477,6 +519,18 @@ export function createBotAdminRouter(service: BotService): Router {
     try {
       const questions = await service.listWhitelistQuestions(botId);
       res.status(200).json({ questions: questions.map(toApiWhitelistQuestion) });
+    } catch (error) {
+      if (handleServiceError(error, res)) return;
+      next(error);
+    }
+  });
+
+  router.get("/:id/whitelist-applications", async (req, res, next) => {
+    const botId = requireBotAccess(req, res, "view");
+    if (!botId) return;
+    try {
+      const applications = await service.listWhitelistApplications(botId);
+      res.status(200).json({ applications: applications.map(toApiWhitelistApplication) });
     } catch (error) {
       if (handleServiceError(error, res)) return;
       next(error);
@@ -610,7 +664,19 @@ export function createBotAdminRouter(service: BotService): Router {
     const guildId = typeof req.params.guildId === "string" ? req.params.guildId : "";
     if (!guildId) { res.status(400).json({ error: "guildId invalido" }); return; }
     try {
-      const tickets: Ticket[] = await service.listTickets(botId, guildId);
+      const principal = getAdminPrincipal(res);
+      const isAdmin = principal?.role === "ceo" || principal?.role === "admin";
+      const discordId = extractDiscordId(principal?.email);
+      // Suporte (não-admin) só vê os tickets que reivindicou; sem vínculo Discord -> nenhum.
+      if (!isAdmin && !discordId) {
+        res.status(200).json({ tickets: [] });
+        return;
+      }
+      const tickets: Ticket[] = await service.listTickets(
+        botId,
+        guildId,
+        isAdmin ? undefined : discordId ?? undefined
+      );
       res.status(200).json({ tickets });
     } catch (error) {
       if (handleServiceError(error, res)) return;
@@ -618,8 +684,43 @@ export function createBotAdminRouter(service: BotService): Router {
     }
   });
 
+  // Reivindica ("pega") um ticket para o usuário Discord logado.
+  router.post("/:id/guilds/:guildId/tickets/:ticketId/claim", async (req, res, next) => {
+    const botId = requireBotAccess(req, res, "view");
+    if (!botId) return;
+    try {
+      const discordId = extractDiscordId(getAdminPrincipal(res)?.email);
+      if (!discordId) {
+        res.status(400).json({ error: "apenas usuarios logados via Discord podem pegar tickets" });
+        return;
+      }
+      const ticketId = Number.parseInt(String(req.params.ticketId), 10);
+      if (!Number.isFinite(ticketId)) { res.status(400).json({ error: "ticketId invalido" }); return; }
+      await service.claimTicket(botId, ticketId, discordId);
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      if (handleServiceError(error, res)) return;
+      next(error);
+    }
+  });
+
+  // Histórico de mensagens do ticket (chat) — para a tela de resposta.
+  router.get("/:id/guilds/:guildId/tickets/:ticketId/messages", async (req, res, next) => {
+    const botId = requireBotAccess(req, res, "view");
+    if (!botId) return;
+    try {
+      const ticketId = Number.parseInt(String(req.params.ticketId), 10);
+      if (!Number.isFinite(ticketId)) { res.status(400).json({ error: "ticketId invalido" }); return; }
+      const messages = await service.listTicketMessages(botId, ticketId);
+      res.status(200).json({ messages });
+    } catch (error) {
+      if (handleServiceError(error, res)) return;
+      next(error);
+    }
+  });
+
   router.post("/:id/guilds/:guildId/tickets/:ticketId/reply", async (req, res, next) => {
-    const botId = requireBotAccess(req, res, "update");
+    const botId = requireBotAccess(req, res, "view");
     if (!botId) return;
     try {
       const body = req.body as { channelId?: string; adminName?: string; content?: string };
