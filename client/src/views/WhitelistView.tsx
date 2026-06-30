@@ -696,7 +696,7 @@ function ApplicationCard({ app, questionMap }: { app: WhitelistApplication; ques
                     )}
                     <p className="text-[11px] font-medium text-zinc-500">{question?.questionText ?? key}</p>
                   </div>
-                  <p className={`text-xs whitespace-pre-wrap break-words ${graded ? 'pl-5' : ''} ${graded && !correct ? 'text-red-300' : 'text-zinc-300'}`}>
+                  <p className={`text-xs whitespace-pre-wrap break-words ${graded ? 'pl-5' : ''} ${graded ? (correct ? 'text-emerald-300' : 'text-red-300') : 'text-zinc-300'}`}>
                     {String(value)}
                   </p>
                   {graded && !correct && question?.options?.[question.correctIndex] && (
