@@ -65,6 +65,21 @@ export async function fetchBotUser(token: string): Promise<DiscordBotUserRaw> {
   return res.json() as Promise<DiscordBotUserRaw>;
 }
 
+export interface DiscordUserRaw {
+  id: string;
+  username: string;
+  global_name: string | null;
+  discriminator: string;
+  avatar: string | null;
+}
+
+/** Resolve um usuário do Discord pelo seu ID (snowflake) usando o token do bot. */
+export async function fetchDiscordUser(token: string, userId: string): Promise<DiscordUserRaw> {
+  assertSnowflake(userId, "userId");
+  const res = await discordFetch(token, `/users/${userId}`);
+  return res.json() as Promise<DiscordUserRaw>;
+}
+
 export async function patchBotUser(
   token: string,
   fields: { username?: string; avatar?: string | null }

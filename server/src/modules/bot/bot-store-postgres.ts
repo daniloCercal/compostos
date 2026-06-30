@@ -119,6 +119,7 @@ type WhitelistApplicationRow = {
   app_number: number | string;
   status: string;
   answers: unknown;
+  quiz_state: unknown;
   current_question: number | string;
   reviewed_by: string | null;
   review_note: string | null;
@@ -526,6 +527,20 @@ function rowToWhitelistApplication(row: WhitelistApplicationRow): WhitelistAppli
   } else if (typeof row.answers === "string") {
     try { answers = JSON.parse(row.answers) as Record<string, unknown>; } catch { answers = {}; }
   }
+  // quiz_state é um jsonb { results: { fieldKey: bool }, ... } gravado pelo bot.
+  let quizState: Record<string, unknown> = {};
+  if (row.quiz_state && typeof row.quiz_state === "object") {
+    quizState = row.quiz_state as Record<string, unknown>;
+  } else if (typeof row.quiz_state === "string") {
+    try { quizState = JSON.parse(row.quiz_state) as Record<string, unknown>; } catch { quizState = {}; }
+  }
+  const quizResults: Record<string, boolean> = {};
+  const rawResults = quizState.results;
+  if (rawResults && typeof rawResults === "object") {
+    for (const [key, value] of Object.entries(rawResults as Record<string, unknown>)) {
+      quizResults[key] = Boolean(value);
+    }
+  }
   return {
     id: Number(row.id),
     guildId: row.guild_id,
@@ -534,12 +549,15 @@ function rowToWhitelistApplication(row: WhitelistApplicationRow): WhitelistAppli
     appNumber: Number(row.app_number ?? 0),
     status,
     answers,
+    quizResults,
     currentQuestion: Number(row.current_question ?? 0),
     reviewedBy: row.reviewed_by ?? "",
     reviewNote: row.review_note ?? "",
     startedAt: toNullableIso(row.started_at),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
+    username: "",
+    displayName: "",
   };
 }
 
@@ -857,7 +875,8 @@ export class BotStorePostgres {
     // posse verificada via guild_configs (site schema, search_path).
     const result = await this.pool.query<WhitelistApplicationRow>(
       `SELECT a.id, a.guild_id, a.user_id, a.channel_id, a.app_number, a.status,
-              a.answers, a.current_question, a.reviewed_by, a.review_note,
+              a.answers, COALESCE(a.quiz_state, '{}'::jsonb) AS quiz_state,
+              a.current_question, a.reviewed_by, a.review_note,
               a.started_at, a.created_at, a.updated_at
        FROM public.allowlist_applications a
        WHERE EXISTS (SELECT 1 FROM guild_configs gc

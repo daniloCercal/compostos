@@ -653,6 +653,11 @@ interface WhitelistApplicationApiItem {
   app_number?: number
   status?: string
   answers?: unknown
+  quizResults?: Record<string, boolean>
+  quiz_results?: Record<string, boolean>
+  username?: string
+  displayName?: string
+  display_name?: string
   currentQuestion?: number
   current_question?: number
   reviewedBy?: string
@@ -680,6 +685,10 @@ function normalizeWhitelistApplication(item: WhitelistApplicationApiItem): White
   const answers = rawAnswers && typeof rawAnswers === 'object'
     ? (rawAnswers as Record<string, unknown>)
     : {}
+  const rawResults = item.quizResults ?? item.quiz_results
+  const quizResults = rawResults && typeof rawResults === 'object'
+    ? (rawResults as Record<string, boolean>)
+    : {}
   return {
     id: Number(item.id ?? 0),
     guildId: item.guildId ?? item.guild_id ?? '',
@@ -688,12 +697,15 @@ function normalizeWhitelistApplication(item: WhitelistApplicationApiItem): White
     appNumber: item.appNumber ?? item.app_number ?? 0,
     status,
     answers,
+    quizResults,
     currentQuestion: item.currentQuestion ?? item.current_question ?? 0,
     reviewedBy: item.reviewedBy ?? item.reviewed_by ?? '',
     reviewNote: item.reviewNote ?? item.review_note ?? '',
     startedAt: item.startedAt ?? item.started_at ?? null,
     createdAt: item.createdAt ?? item.created_at ?? '',
     updatedAt: item.updatedAt ?? item.updated_at ?? '',
+    username: item.username ?? '',
+    displayName: item.displayName ?? item.display_name ?? '',
   }
 }
 

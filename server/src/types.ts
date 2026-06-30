@@ -209,10 +209,16 @@ export interface WhitelistApplication {
   appNumber: number;
   status: WhitelistApplicationStatus;
   answers: Record<string, unknown>;
+  /** Correção por pergunta de quiz: fieldKey -> acertou? (vindo de quiz_state.results). */
+  quizResults: Record<string, boolean>;
   currentQuestion: number;
   reviewedBy: string;
   reviewNote: string;
   startedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** @username do Discord, resolvido via API (vazio se não resolvido). */
+  username: string;
+  /** Nome de exibição (global_name) do Discord, se houver. */
+  displayName: string;
 }

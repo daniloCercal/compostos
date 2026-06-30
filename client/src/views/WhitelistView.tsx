@@ -200,8 +200,8 @@ export function WhitelistView({ session }: WhitelistViewProps) {
   const isDirty = drafts !== null
   const inputCls = 'w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500/60 focus:outline-none text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm disabled:opacity-50'
 
-  // Mapa campo-chave -> texto da pergunta, para exibir respostas legíveis.
-  const questionLabels = new Map(serverQuestions.map((q) => [q.fieldKey, q.questionText]))
+  // Mapa campo-chave -> pergunta, para exibir respostas legíveis e identificar quizzes.
+  const questionMap = new Map(serverQuestions.map((q) => [q.fieldKey, q]))
 
   const inProgress = applications.filter((a) => a.status === 'pending' || a.status === 'theory_passed')
   const approved = applications.filter((a) => a.status === 'approved')
@@ -285,7 +285,7 @@ export function WhitelistView({ session }: WhitelistViewProps) {
           inProgress={inProgress}
           approved={approved}
           rejected={rejected}
-          questionLabels={questionLabels}
+          questionMap={questionMap}
         />
       )}
 
@@ -546,10 +546,10 @@ interface ApplicationsBoardProps {
   inProgress: WhitelistApplication[]
   approved: WhitelistApplication[]
   rejected: WhitelistApplication[]
-  questionLabels: Map<string, string>
+  questionMap: Map<string, WhitelistQuestion>
 }
 
-function ApplicationsBoard({ isLoading, isError, isFetching, onRefresh, inProgress, approved, rejected, questionLabels }: ApplicationsBoardProps) {
+function ApplicationsBoard({ isLoading, isError, isFetching, onRefresh, inProgress, approved, rejected, questionMap }: ApplicationsBoardProps) {
   if (isLoading) {
     return <div className="text-sm text-zinc-500 text-center py-8">Carregando aplicações...</div>
   }
@@ -586,21 +586,21 @@ function ApplicationsBoard({ isLoading, isError, isFetching, onRefresh, inProgre
           icon={<Clock className="w-4 h-4 text-amber-400" />}
           accent="border-t-amber-500/40"
           apps={inProgress}
-          questionLabels={questionLabels}
+          questionMap={questionMap}
         />
         <ApplicationColumn
           title="Aprovado"
           icon={<CheckCircle className="w-4 h-4 text-emerald-400" />}
           accent="border-t-emerald-500/40"
           apps={approved}
-          questionLabels={questionLabels}
+          questionMap={questionMap}
         />
         <ApplicationColumn
           title="Reprovado"
           icon={<XCircle className="w-4 h-4 text-red-400" />}
           accent="border-t-red-500/40"
           apps={rejected}
-          questionLabels={questionLabels}
+          questionMap={questionMap}
         />
       </div>
     </div>
@@ -612,10 +612,10 @@ interface ApplicationColumnProps {
   icon: ReactNode
   accent: string
   apps: WhitelistApplication[]
-  questionLabels: Map<string, string>
+  questionMap: Map<string, WhitelistQuestion>
 }
 
-function ApplicationColumn({ title, icon, accent, apps, questionLabels }: ApplicationColumnProps) {
+function ApplicationColumn({ title, icon, accent, apps, questionMap }: ApplicationColumnProps) {
   return (
     <div className={`bg-zinc-900/50 rounded-xl border border-zinc-800 border-t-2 ${accent} p-3 space-y-3`}>
       <div className="flex items-center justify-between px-1">
@@ -630,7 +630,7 @@ function ApplicationColumn({ title, icon, accent, apps, questionLabels }: Applic
       ) : (
         <div className="space-y-2">
           {apps.map((app) => (
-            <ApplicationCard key={app.id} app={app} questionLabels={questionLabels} />
+            <ApplicationCard key={app.id} app={app} questionMap={questionMap} />
           ))}
         </div>
       )}
@@ -638,10 +638,17 @@ function ApplicationColumn({ title, icon, accent, apps, questionLabels }: Applic
   )
 }
 
-function ApplicationCard({ app, questionLabels }: { app: WhitelistApplication; questionLabels: Map<string, string> }) {
+function ApplicationCard({ app, questionMap }: { app: WhitelistApplication; questionMap: Map<string, WhitelistQuestion> }) {
   const [open, setOpen] = useState(false)
   const meta = STATUS_META[app.status]
   const answerEntries = Object.entries(app.answers ?? {})
+
+  // Correção do quiz: quantas/quais erradas.
+  const quizEntries = Object.entries(app.quizResults ?? {})
+  const quizTotal = quizEntries.length
+  const wrongCount = quizEntries.filter(([, ok]) => !ok).length
+
+  const handle = app.username ? `@${app.username}` : null
 
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3">
@@ -654,7 +661,20 @@ function ApplicationCard({ app, questionLabels }: { app: WhitelistApplication; q
             {meta.label}
           </span>
         </div>
-        <p className="text-xs text-zinc-500 mt-1 font-mono truncate">ID: {app.userId}</p>
+        {handle ? (
+          <p className="text-xs text-zinc-200 mt-1 font-medium truncate">
+            {handle}
+            {app.displayName && <span className="text-zinc-500 font-normal"> · {app.displayName}</span>}
+          </p>
+        ) : null}
+        <p className="text-[11px] text-zinc-600 mt-0.5 font-mono truncate">ID: {app.userId}</p>
+        {quizTotal > 0 && (
+          <p className={`text-[11px] mt-1 font-medium ${wrongCount > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+            {wrongCount > 0
+              ? `Errou ${wrongCount} de ${quizTotal} ${quizTotal === 1 ? 'questão' : 'questões'}`
+              : `Acertou todas as ${quizTotal} ${quizTotal === 1 ? 'questão' : 'questões'}`}
+          </p>
+        )}
         <p className="text-[11px] text-zinc-600 mt-0.5">{formatDate(app.updatedAt || app.createdAt)}</p>
       </button>
 
@@ -663,12 +683,28 @@ function ApplicationCard({ app, questionLabels }: { app: WhitelistApplication; q
           {answerEntries.length === 0 ? (
             <p className="text-xs text-zinc-600">Nenhuma resposta registrada.</p>
           ) : (
-            answerEntries.map(([key, value]) => (
-              <div key={key}>
-                <p className="text-[11px] font-medium text-zinc-500">{questionLabels.get(key) ?? key}</p>
-                <p className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{String(value)}</p>
-              </div>
-            ))
+            answerEntries.map(([key, value]) => {
+              const question = questionMap.get(key)
+              const graded = question?.questionType === 'quiz' && key in app.quizResults
+              const correct = app.quizResults[key]
+              return (
+                <div key={key}>
+                  <div className="flex items-start gap-1.5">
+                    {graded && (correct
+                      ? <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-px" />
+                      : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-px" />
+                    )}
+                    <p className="text-[11px] font-medium text-zinc-500">{question?.questionText ?? key}</p>
+                  </div>
+                  <p className={`text-xs whitespace-pre-wrap break-words ${graded ? 'pl-5' : ''} ${graded && !correct ? 'text-red-300' : 'text-zinc-300'}`}>
+                    {String(value)}
+                  </p>
+                  {graded && !correct && question?.options?.[question.correctIndex] && (
+                    <p className="text-[11px] text-emerald-400/80 pl-5">Correta: {question.options[question.correctIndex]}</p>
+                  )}
+                </div>
+              )
+            })
           )}
           {app.reviewNote && (
             <div className="pt-1">

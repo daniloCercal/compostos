@@ -1,11 +1,16 @@
 import { z } from "zod";
 
 import type { Bot, BotCommand, BotLog, BotStatus, GuildConfig, DiscordGuild, BotDiscordUser, WhitelistQuestion, WhitelistApplication, ExtendedGuildConfig, DiscordRole, DiscordChannel, Ticket, TicketMessage } from "../../types";
-import { fetchBotGuilds, fetchBotUser, patchBotUser, patchGuildNickname, buildAvatarUrl, buildGuildIconUrl, DiscordApiError, fetchGuildRoles, fetchGuildChannels, sendChannelMessage, createChannelPermissionOverwrite } from "../../utils/discord-api";
+import { fetchBotGuilds, fetchBotUser, patchBotUser, patchGuildNickname, buildAvatarUrl, buildGuildIconUrl, DiscordApiError, fetchGuildRoles, fetchGuildChannels, sendChannelMessage, createChannelPermissionOverwrite, fetchDiscordUser } from "../../utils/discord-api";
 import { createId, utcIsoNow } from "../../utils/id";
 import { BotStorePostgres } from "./bot-store-postgres";
 
 const MAX_LOG_LIMIT = 100;
+
+// Cache de resolução de @username do Discord (id -> handle), com TTL,
+// para evitar bater na API do Discord a cada listagem de aplicações.
+const USER_CACHE_TTL_MS = 10 * 60 * 1000;
+const userHandleCache = new Map<string, { username: string; displayName: string; at: number }>();
 
 const botCommandSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -361,7 +366,57 @@ export class BotService {
   async listWhitelistApplications(botId: string): Promise<WhitelistApplication[]> {
     const bot = await this.store.getById(botId);
     if (!bot) throw new BotServiceError(404, "bot nao encontrado");
-    return this.store.listWhitelistApplications(botId);
+    const applications = await this.store.listWhitelistApplications(botId);
+    await this.resolveApplicationHandles(bot.token, applications);
+    return applications;
+  }
+
+  /**
+   * Resolve @username/nome de exibição do Discord para cada aplicação, mutando-as.
+   * Usa cache com TTL e nunca lança: se o token faltar ou um usuário falhar,
+   * a aplicação fica apenas com o ID numérico.
+   */
+  private async resolveApplicationHandles(token: string, applications: WhitelistApplication[]): Promise<void> {
+    if (!token) return;
+    const now = Date.now();
+    const unresolved = new Set<string>();
+    for (const app of applications) {
+      if (!app.userId) continue;
+      const cached = userHandleCache.get(app.userId);
+      if (cached && now - cached.at < USER_CACHE_TTL_MS) {
+        app.username = cached.username;
+        app.displayName = cached.displayName;
+      } else {
+        unresolved.add(app.userId);
+      }
+    }
+
+    await Promise.all(
+      [...unresolved].map(async (userId) => {
+        try {
+          const user = await fetchDiscordUser(token, userId);
+          userHandleCache.set(userId, {
+            username: user.username ?? "",
+            displayName: user.global_name ?? "",
+            at: now,
+          });
+        } catch {
+          // 404 (usuário deletado), token inválido, rate limit etc.: ignora,
+          // mantém só o ID. Cacheia vazio por curto período para não martelar.
+          userHandleCache.set(userId, { username: "", displayName: "", at: now });
+        }
+      })
+    );
+
+    for (const app of applications) {
+      if (!app.username && app.userId) {
+        const cached = userHandleCache.get(app.userId);
+        if (cached) {
+          app.username = cached.username;
+          app.displayName = cached.displayName;
+        }
+      }
+    }
   }
 
   async getExtendedConfig(botId: string, guildId: string): Promise<ExtendedGuildConfig | null> {
