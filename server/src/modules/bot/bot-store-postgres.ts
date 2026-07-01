@@ -64,7 +64,10 @@ type GuildConfigRow = {
   ticket_log_channel_id: string;
   whitelist_channel_id: string;
   whitelist_log_channel_id: string;
+  whitelist_approved_channel_id: string;
+  whitelist_rejected_channel_id: string;
   whitelist_role_id: string;
+  whitelist_rejected_role_id: string;
   verified_role_id: string;
   staff_role_id: string;
   admin_role_id: string;
@@ -353,6 +356,20 @@ const ALTER_WHITELIST_QUESTIONS_CORRECT_INDEX_DDL = `
   ALTER TABLE whitelist_questions ADD COLUMN IF NOT EXISTS correct_index int NOT NULL DEFAULT 0
 `;
 
+const ALTER_GUILD_CONFIGS_WL_RESULT_DDL = `
+  ALTER TABLE guild_configs
+    ADD COLUMN IF NOT EXISTS whitelist_approved_channel_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS whitelist_rejected_channel_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS whitelist_rejected_role_id    text NOT NULL DEFAULT ''
+`;
+
+const ALTER_PUBLIC_GUILD_CONFIGS_WL_RESULT_DDL = `
+  ALTER TABLE public.guild_configs
+    ADD COLUMN IF NOT EXISTS whitelist_approved_channel_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS whitelist_rejected_channel_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS whitelist_rejected_role_id    text NOT NULL DEFAULT ''
+`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -453,7 +470,10 @@ function rowToGuildConfig(row: GuildConfigRow): GuildConfig {
     ticketLogChannelId: row.ticket_log_channel_id ?? "",
     whitelistChannelId: row.whitelist_channel_id ?? "",
     whitelistLogChannelId: row.whitelist_log_channel_id ?? "",
+    whitelistApprovedChannelId: row.whitelist_approved_channel_id ?? "",
+    whitelistRejectedChannelId: row.whitelist_rejected_channel_id ?? "",
     whitelistRoleId: row.whitelist_role_id ?? "",
+    whitelistRejectedRoleId: row.whitelist_rejected_role_id ?? "",
     verifiedRoleId: row.verified_role_id ?? "",
     staffRoleId: row.staff_role_id ?? "",
     adminRoleId: row.admin_role_id ?? "",
@@ -749,7 +769,9 @@ export class BotStorePostgres {
     const result = await this.pool.query<GuildConfigRow>(
       `SELECT guild_id, bot_id, log_channel_id, ticket_category_id,
               ticket_log_channel_id, whitelist_channel_id, whitelist_log_channel_id,
-              whitelist_role_id, verified_role_id, staff_role_id, admin_role_id,
+              whitelist_approved_channel_id, whitelist_rejected_channel_id,
+              whitelist_role_id, whitelist_rejected_role_id,
+              verified_role_id, staff_role_id, admin_role_id,
               max_tickets_per_user, ticket_prefix, whitelist_pass_message,
               whitelist_fail_message, welcome_message,
               COALESCE(whitelist_pass_score, 80) AS whitelist_pass_score,
@@ -774,33 +796,40 @@ export class BotStorePostgres {
     const result = await this.pool.query<GuildConfigRow>(
       `INSERT INTO guild_configs (
          guild_id, bot_id, log_channel_id, ticket_category_id, ticket_log_channel_id,
-         whitelist_channel_id, whitelist_log_channel_id, whitelist_role_id,
+         whitelist_channel_id, whitelist_log_channel_id,
+         whitelist_approved_channel_id, whitelist_rejected_channel_id,
+         whitelist_role_id, whitelist_rejected_role_id,
          verified_role_id, staff_role_id, admin_role_id,
          max_tickets_per_user, ticket_prefix, whitelist_pass_message,
          whitelist_fail_message, welcome_message, whitelist_pass_score, panel_configs
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb)
        ON CONFLICT (guild_id) DO UPDATE SET
-         bot_id                   = EXCLUDED.bot_id,
-         log_channel_id           = EXCLUDED.log_channel_id,
-         ticket_category_id       = EXCLUDED.ticket_category_id,
-         ticket_log_channel_id    = EXCLUDED.ticket_log_channel_id,
-         whitelist_channel_id     = EXCLUDED.whitelist_channel_id,
-         whitelist_log_channel_id = EXCLUDED.whitelist_log_channel_id,
-         whitelist_role_id        = EXCLUDED.whitelist_role_id,
-         verified_role_id         = EXCLUDED.verified_role_id,
-         staff_role_id            = EXCLUDED.staff_role_id,
-         admin_role_id            = EXCLUDED.admin_role_id,
-         max_tickets_per_user     = EXCLUDED.max_tickets_per_user,
-         ticket_prefix            = EXCLUDED.ticket_prefix,
-         whitelist_pass_message   = EXCLUDED.whitelist_pass_message,
-         whitelist_fail_message   = EXCLUDED.whitelist_fail_message,
-         welcome_message          = EXCLUDED.welcome_message,
-         whitelist_pass_score     = EXCLUDED.whitelist_pass_score,
-         panel_configs            = EXCLUDED.panel_configs,
-         updated_at               = now()
+         bot_id                        = EXCLUDED.bot_id,
+         log_channel_id                = EXCLUDED.log_channel_id,
+         ticket_category_id            = EXCLUDED.ticket_category_id,
+         ticket_log_channel_id         = EXCLUDED.ticket_log_channel_id,
+         whitelist_channel_id          = EXCLUDED.whitelist_channel_id,
+         whitelist_log_channel_id      = EXCLUDED.whitelist_log_channel_id,
+         whitelist_approved_channel_id = EXCLUDED.whitelist_approved_channel_id,
+         whitelist_rejected_channel_id = EXCLUDED.whitelist_rejected_channel_id,
+         whitelist_role_id             = EXCLUDED.whitelist_role_id,
+         whitelist_rejected_role_id    = EXCLUDED.whitelist_rejected_role_id,
+         verified_role_id              = EXCLUDED.verified_role_id,
+         staff_role_id                 = EXCLUDED.staff_role_id,
+         admin_role_id                 = EXCLUDED.admin_role_id,
+         max_tickets_per_user          = EXCLUDED.max_tickets_per_user,
+         ticket_prefix                 = EXCLUDED.ticket_prefix,
+         whitelist_pass_message        = EXCLUDED.whitelist_pass_message,
+         whitelist_fail_message        = EXCLUDED.whitelist_fail_message,
+         welcome_message               = EXCLUDED.welcome_message,
+         whitelist_pass_score          = EXCLUDED.whitelist_pass_score,
+         panel_configs                 = EXCLUDED.panel_configs,
+         updated_at                    = now()
        RETURNING guild_id, bot_id, log_channel_id, ticket_category_id,
          ticket_log_channel_id, whitelist_channel_id, whitelist_log_channel_id,
-         whitelist_role_id, verified_role_id, staff_role_id, admin_role_id,
+         whitelist_approved_channel_id, whitelist_rejected_channel_id,
+         whitelist_role_id, whitelist_rejected_role_id,
+         verified_role_id, staff_role_id, admin_role_id,
          max_tickets_per_user, ticket_prefix, whitelist_pass_message,
          whitelist_fail_message, welcome_message,
          COALESCE(whitelist_pass_score, 80) AS whitelist_pass_score,
@@ -808,7 +837,9 @@ export class BotStorePostgres {
          created_at, updated_at`,
       [guildId, botId,
        fields.logChannelId, fields.ticketCategoryId, fields.ticketLogChannelId,
-       fields.whitelistChannelId, fields.whitelistLogChannelId, fields.whitelistRoleId,
+       fields.whitelistChannelId, fields.whitelistLogChannelId,
+       fields.whitelistApprovedChannelId, fields.whitelistRejectedChannelId,
+       fields.whitelistRoleId, fields.whitelistRejectedRoleId,
        fields.verifiedRoleId, fields.staffRoleId, fields.adminRoleId,
        fields.maxTicketsPerUser, fields.ticketPrefix,
        fields.whitelistPassMessage, fields.whitelistFailMessage, fields.welcomeMessage,
@@ -821,32 +852,39 @@ export class BotStorePostgres {
     await this.pool.query(
       `INSERT INTO public.guild_configs (
          guild_id, log_channel_id, ticket_category_id, ticket_log_channel_id,
-         whitelist_channel_id, whitelist_log_channel_id, whitelist_role_id,
+         whitelist_channel_id, whitelist_log_channel_id,
+         whitelist_approved_channel_id, whitelist_rejected_channel_id,
+         whitelist_role_id, whitelist_rejected_role_id,
          verified_role_id, staff_role_id, admin_role_id,
          max_tickets_per_user, ticket_prefix, whitelist_pass_message,
          whitelist_fail_message, welcome_message, whitelist_pass_score, panel_configs
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
        ON CONFLICT (guild_id) DO UPDATE SET
-         log_channel_id           = EXCLUDED.log_channel_id,
-         ticket_category_id       = EXCLUDED.ticket_category_id,
-         ticket_log_channel_id    = EXCLUDED.ticket_log_channel_id,
-         whitelist_channel_id     = EXCLUDED.whitelist_channel_id,
-         whitelist_log_channel_id = EXCLUDED.whitelist_log_channel_id,
-         whitelist_role_id        = EXCLUDED.whitelist_role_id,
-         verified_role_id         = EXCLUDED.verified_role_id,
-         staff_role_id            = EXCLUDED.staff_role_id,
-         admin_role_id            = EXCLUDED.admin_role_id,
-         max_tickets_per_user     = EXCLUDED.max_tickets_per_user,
-         ticket_prefix            = EXCLUDED.ticket_prefix,
-         whitelist_pass_message   = EXCLUDED.whitelist_pass_message,
-         whitelist_fail_message   = EXCLUDED.whitelist_fail_message,
-         welcome_message          = EXCLUDED.welcome_message,
-         whitelist_pass_score     = EXCLUDED.whitelist_pass_score,
-         panel_configs            = EXCLUDED.panel_configs,
-         updated_at               = now()`,
+         log_channel_id                = EXCLUDED.log_channel_id,
+         ticket_category_id            = EXCLUDED.ticket_category_id,
+         ticket_log_channel_id         = EXCLUDED.ticket_log_channel_id,
+         whitelist_channel_id          = EXCLUDED.whitelist_channel_id,
+         whitelist_log_channel_id      = EXCLUDED.whitelist_log_channel_id,
+         whitelist_approved_channel_id = EXCLUDED.whitelist_approved_channel_id,
+         whitelist_rejected_channel_id = EXCLUDED.whitelist_rejected_channel_id,
+         whitelist_role_id             = EXCLUDED.whitelist_role_id,
+         whitelist_rejected_role_id    = EXCLUDED.whitelist_rejected_role_id,
+         verified_role_id              = EXCLUDED.verified_role_id,
+         staff_role_id                 = EXCLUDED.staff_role_id,
+         admin_role_id                 = EXCLUDED.admin_role_id,
+         max_tickets_per_user          = EXCLUDED.max_tickets_per_user,
+         ticket_prefix                 = EXCLUDED.ticket_prefix,
+         whitelist_pass_message        = EXCLUDED.whitelist_pass_message,
+         whitelist_fail_message        = EXCLUDED.whitelist_fail_message,
+         welcome_message               = EXCLUDED.welcome_message,
+         whitelist_pass_score          = EXCLUDED.whitelist_pass_score,
+         panel_configs                 = EXCLUDED.panel_configs,
+         updated_at                    = now()`,
       [guildId,
        fields.logChannelId, fields.ticketCategoryId, fields.ticketLogChannelId,
-       fields.whitelistChannelId, fields.whitelistLogChannelId, fields.whitelistRoleId,
+       fields.whitelistChannelId, fields.whitelistLogChannelId,
+       fields.whitelistApprovedChannelId, fields.whitelistRejectedChannelId,
+       fields.whitelistRoleId, fields.whitelistRejectedRoleId,
        fields.verifiedRoleId, fields.staffRoleId, fields.adminRoleId,
        fields.maxTicketsPerUser, fields.ticketPrefix,
        fields.whitelistPassMessage, fields.whitelistFailMessage, fields.welcomeMessage,
@@ -1102,6 +1140,9 @@ export class BotStorePostgres {
     await this.runQuery(ALTER_WHITELIST_QUESTIONS_TYPE_DDL);
     await this.runQuery(ALTER_WHITELIST_QUESTIONS_OPTIONS_DDL);
     await this.runQuery(ALTER_WHITELIST_QUESTIONS_CORRECT_INDEX_DDL);
+    // Canais/cargo de resultado da whitelist
+    await this.runQuery(ALTER_GUILD_CONFIGS_WL_RESULT_DDL);
+    await this.runQuery(ALTER_PUBLIC_GUILD_CONFIGS_WL_RESULT_DDL, ["42P01"]);
   }
 
   private async runQuery(query: string, ignoredCodes: string[] = []): Promise<void> {

@@ -9,8 +9,12 @@ type GuildConfig struct {
 	TicketLogChannelID    string
 	WhitelistChannelID    string
 	WhitelistLogChannelID string
-	WhitelistRoleID       string
-	VerifiedRoleID        string
+	// Canais dedicados para os embeds de resultado; vazios → usa o log geral.
+	WhitelistApprovedChannelID string
+	WhitelistRejectedChannelID string
+	WhitelistRoleID            string
+	WhitelistRejectedRoleID    string
+	VerifiedRoleID             string
 	StaffRoleID           string
 	AdminRoleID           string
 	MaxTicketsPerUser     int

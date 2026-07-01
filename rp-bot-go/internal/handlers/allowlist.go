@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -14,13 +15,108 @@ import (
 	"github.com/yourorg/rp-bot/internal/services/quiz"
 )
 
+// Timeouts do fluxo de whitelist.
+const (
+	// Antes de digitar "iniciar": aviso aos 3min, cancela aos 5min.
+	preStartWarnAfter = 3 * time.Minute
+	preStartKillAfter = 5 * time.Minute
+	// Entre perguntas: aviso após 1min de silêncio, cancela aos 2min.
+	answerWarnAfter = 1 * time.Minute
+	answerKillAfter = 2 * time.Minute
+	// Exclusão do canal após o término.
+	deleteAfterTimeout = 30 * time.Second
+	deleteAfterResult  = 1 * time.Minute
+)
+
+// Cargos atribuídos conforme o resultado.
+const (
+	approvedRoleName = "Entrevistado"
+	rejectedRoleName = "Reprovado"
+)
+
 type Allowlist struct {
 	b     *bot.Bot
 	cache *services.ChannelCache
+
+	mu sync.Mutex
+	// warnedAt guarda, por aplicação, o QuestionStartedAt vigente quando o
+	// aviso de inatividade foi enviado. Se o usuário responder, o timestamp
+	// muda no banco e o aviso "reseta" automaticamente.
+	warnedAt map[int64]time.Time
 }
 
 func NewAllowlist(b *bot.Bot, cache *services.ChannelCache) *Allowlist {
-	return &Allowlist{b: b, cache: cache}
+	return &Allowlist{b: b, cache: cache, warnedAt: map[int64]time.Time{}}
+}
+
+func (a *Allowlist) wasWarned(appID int64, questionStartedAt time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.warnedAt[appID]
+	return ok && t.Equal(questionStartedAt)
+}
+
+func (a *Allowlist) markWarned(appID int64, questionStartedAt time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.warnedAt[appID] = questionStartedAt
+}
+
+func (a *Allowlist) clearWarned(appID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.warnedAt, appID)
+}
+
+// touchActivity atualiza question_started_at para "agora", resetando o timer
+// de inatividade sem alterar respostas nem a pergunta atual.
+func (a *Allowlist) touchActivity(ctx context.Context, app *db.AllowlistApplication) {
+	now := time.Now()
+	_ = a.b.LogDBErr("UpdateApplicationProgress",
+		a.b.DB.UpdateApplicationProgress(ctx, app.ID, app.Answers, app.CurrentQuestion, &now))
+}
+
+// deleteChannelAfter agenda a exclusão do canal de aplicação.
+func (a *Allowlist) deleteChannelAfter(s *discordgo.Session, channelID string, d time.Duration) {
+	time.AfterFunc(d, func() {
+		if _, err := s.ChannelDelete(channelID); err != nil {
+			a.b.Log.Warn("excluir canal de aplicação", "channel", channelID, "err", err)
+		}
+	})
+}
+
+// roleIDByName localiza um cargo do guild pelo nome (case-insensitive).
+func (a *Allowlist) roleIDByName(s *discordgo.Session, guildID, name string) string {
+	var roles []*discordgo.Role
+	if g, err := s.State.Guild(guildID); err == nil && g != nil {
+		roles = g.Roles
+	}
+	if len(roles) == 0 {
+		roles, _ = s.GuildRoles(guildID)
+	}
+	for _, r := range roles {
+		if strings.EqualFold(r.Name, name) {
+			return r.ID
+		}
+	}
+	return ""
+}
+
+// characterName extrai o nome do personagem das respostas da aplicação.
+func characterName(questions []db.QuizQuestion, app *db.AllowlistApplication) string {
+	for _, f := range []string{"personagem", "character", "char_name", "nome", "ign"} {
+		if v := strings.TrimSpace(app.Answers[f]); v != "" {
+			return v
+		}
+	}
+	for _, q := range questions {
+		if q.Type != "quiz" {
+			if v := strings.TrimSpace(app.Answers[q.Field]); v != "" {
+				return v
+			}
+		}
+	}
+	return "—"
 }
 
 // canReview indica se o autor da interação é staff/admin do guild.
@@ -230,6 +326,8 @@ func (a *Allowlist) OnMessage(s *discordgo.Session, m *discordgo.MessageCreate) 
 			_, firstQ := quiz.Resolve(&qs, questions, 0)
 			_, _ = s.ChannelMessageSend(m.ChannelID, quiz.FormatQuestion(1, firstQ, &qs))
 		} else {
+			// Qualquer mensagem reseta o timer de inatividade da fase pré-início.
+			a.touchActivity(ctx, app)
 			_, _ = s.ChannelMessageSend(m.ChannelID, "Digite **iniciar** para começar as perguntas.")
 		}
 		return
@@ -247,6 +345,8 @@ func (a *Allowlist) OnMessage(s *discordgo.Session, m *discordgo.MessageCreate) 
 	if q.Type == "quiz" && len(q.Options) > 0 {
 		correct, valid := quiz.Grade(q, &qs, m.Content)
 		if !valid {
+			// Mensagem inválida ainda conta como atividade: reseta o timer.
+			a.touchActivity(ctx, app)
 			letters := []string{"a", "b", "c", "d"}
 			validLetters := strings.Join(letters[:len(q.Options)], ", ")
 			_, _ = s.ChannelMessageSend(m.ChannelID, fmt.Sprintf(
@@ -275,121 +375,127 @@ func (a *Allowlist) OnMessage(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 // finishApplication calcula a pontuação e aprova ou rejeita automaticamente.
 func (a *Allowlist) finishApplication(ctx context.Context, s *discordgo.Session, app *db.AllowlistApplication, questions []db.QuizQuestion) {
-	// A aplicação deixa de estar 'pending' (vira theory_passed ou rejected),
+	// A aplicação deixa de estar 'pending' (vira approved ou rejected),
 	// então sai do cache de coleta de respostas.
 	a.cache.Remove(app.ChannelID)
+	a.clearWarned(app.ID)
 	qs := app.QuizState
-	_, _, score, passed := quiz.Score(questions, &qs)
+	correct, quizCount, _, passed := quiz.Score(questions, &qs)
 	passPct := qs.PassScore
 	if passPct <= 0 {
 		passPct = quiz.DefaultPassScore
 	}
+	minCorrect := (passPct*quizCount + 99) / 100
+
+	cfg, _ := a.b.DB.GetGuildConfig(ctx, app.GuildID)
 
 	if passed {
-		_ = a.b.DB.UpdateApplicationStatus(ctx, app.ID, "theory_passed")
-		a.sendForReview(ctx, s, app, questions)
-		_, _ = s.ChannelMessageSend(app.ChannelID, "Todas as perguntas respondidas! Sua aplicação está em análise.")
-	} else {
-		_ = a.b.DB.UpdateApplicationStatus(ctx, app.ID, "rejected")
-		_ = a.b.DB.FinalizeApplicationReview(ctx, app.ID, "rejected", "auto",
-			fmt.Sprintf("pontuação insuficiente: %d%% (mínimo: %d%%)", score, passPct))
-		a.sendFailReport(ctx, s, app, questions, score, passPct)
+		_ = a.b.DB.FinalizeApplicationReview(ctx, app.ID, "approved", "auto",
+			fmt.Sprintf("%d/%d acertos (mínimo: %d)", correct, quizCount, minCorrect))
 
-		failMsg := fmt.Sprintf("Você não atingiu a pontuação mínima de %d%% (obteve %d%%). Sua aplicação foi reprovada.", passPct, score)
-		cfg, _ := a.b.DB.GetGuildConfig(ctx, app.GuildID)
+		roleID := ""
+		if cfg != nil {
+			roleID = cfg.WhitelistRoleID
+		}
+		if roleID == "" {
+			roleID = a.roleIDByName(s, app.GuildID, approvedRoleName)
+		}
+		if roleID != "" {
+			_ = s.GuildMemberRoleAdd(app.GuildID, app.UserID, roleID)
+		} else {
+			a.b.Log.Warn("cargo de aprovado não encontrado", "guild", app.GuildID, "role", approvedRoleName)
+		}
+
+		passMsg := "✅ **Whitelist aprovada!** Você foi aprovado para seguir no servidor."
+		if cfg != nil && cfg.WhitelistPassMessage != "" {
+			passMsg = cfg.WhitelistPassMessage
+		}
+		_, _ = s.ChannelMessageSend(app.ChannelID,
+			fmt.Sprintf("<@%s> %s\nEste canal será apagado em **1 minuto**.", app.UserID, passMsg))
+		a.sendWhitelistDM(s, app.GuildID, app.UserID, true, passMsg)
+		a.sendResultEmbed(ctx, s, app, questions, true, correct, quizCount, minCorrect, "")
+	} else {
+		failMsg := fmt.Sprintf(
+			"Você não atingiu a nota mínima de %d/%d acertos na fase teórica. Tente novamente em outro momento.",
+			minCorrect, quizCount)
 		if cfg != nil && cfg.WhitelistFailMessage != "" {
 			failMsg = cfg.WhitelistFailMessage
 		}
-		_, _ = s.ChannelMessageSend(app.ChannelID, fmt.Sprintf("<@%s> %s", app.UserID, failMsg))
+		_ = a.b.DB.FinalizeApplicationReview(ctx, app.ID, "rejected", "auto",
+			fmt.Sprintf("%d/%d acertos (mínimo: %d)", correct, quizCount, minCorrect))
+
+		roleID := ""
+		if cfg != nil {
+			roleID = cfg.WhitelistRejectedRoleID
+		}
+		if roleID == "" {
+			roleID = a.roleIDByName(s, app.GuildID, rejectedRoleName)
+		}
+		if roleID != "" {
+			_ = s.GuildMemberRoleAdd(app.GuildID, app.UserID, roleID)
+		} else {
+			a.b.Log.Warn("cargo de reprovado não encontrado", "guild", app.GuildID, "role", rejectedRoleName)
+		}
+
+		_, _ = s.ChannelMessageSend(app.ChannelID,
+			fmt.Sprintf("<@%s> ❌ **Whitelist reprovada.** %s\nEste canal será apagado em **1 minuto**.", app.UserID, failMsg))
 		a.sendWhitelistDM(s, app.GuildID, app.UserID, false, failMsg)
+		a.sendResultEmbed(ctx, s, app, questions, false, correct, quizCount, minCorrect, failMsg)
 	}
+
+	a.deleteChannelAfter(s, app.ChannelID, deleteAfterResult)
 }
 
-func (a *Allowlist) sendForReview(ctx context.Context, s *discordgo.Session, app *db.AllowlistApplication, questions []db.QuizQuestion) {
+// sendResultEmbed publica o resultado final no canal de aprovados/reprovados
+// (fallback: canal de log da whitelist).
+func (a *Allowlist) sendResultEmbed(ctx context.Context, s *discordgo.Session, app *db.AllowlistApplication, questions []db.QuizQuestion, approved bool, correct, quizCount, minCorrect int, reason string) {
 	cfg, _ := a.b.DB.GetGuildConfig(ctx, app.GuildID)
-	if cfg == nil || cfg.WhitelistLogChannelID == "" {
+	if cfg == nil {
 		return
 	}
-	ext := a.b.DB.GetExtendedConfig(ctx, app.GuildID)
-	color := embedColor(ext.EmbedColor)
 
-	sb := &strings.Builder{}
-	fmt.Fprintf(sb, "**Aplicação #%04d** de <@%s>\n\n", app.AppNumber, app.UserID)
-
-	// Resumo do quiz
-	qsReview := app.QuizState
-	if correctCount, quizCount, score, _ := quiz.Score(questions, &qsReview); quizCount > 0 {
-		fmt.Fprintf(sb, "**Quiz:** %d/%d corretos (%d%%)\n\n", correctCount, quizCount, score)
+	title, desc, color := "❌ Whitelist reprovada", "A whitelist foi encerrada sem aprovação.", 0xE74C3C
+	channelID := cfg.WhitelistRejectedChannelID
+	if approved {
+		title, desc, color = "✅ Whitelist aprovada", "Aprovado para seguir no servidor.", 0x2ECC71
+		channelID = cfg.WhitelistApprovedChannelID
 	}
-
-	for _, q := range questions {
-		ans := app.Answers[q.Field]
-		if ans == "" {
-			ans = "_sem resposta_"
-		}
-		if q.Type == "quiz" && len(q.Options) > 0 {
-			correct, had := app.QuizState.Results[q.Field]
-			mark := "❔"
-			if had {
-				if correct {
-					mark = "✅"
-				} else {
-					mark = "❌"
-				}
-			}
-			fmt.Fprintf(sb, "%s **%s**\n%s\n\n", mark, q.Q, ans)
-		} else {
-			fmt.Fprintf(sb, "**%s**\n%s\n\n", q.Q, ans)
-		}
+	if channelID == "" {
+		channelID = cfg.WhitelistLogChannelID
 	}
-
-	embed := buildEmbed(color, fmt.Sprintf("Aplicação #%04d", app.AppNumber), sb.String(), "")
-
-	_, _ = s.ChannelMessageSendComplex(cfg.WhitelistLogChannelID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		Components: []discordgo.MessageComponent{
-			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-				discordgo.Button{Label: "Aprovar", Style: discordgo.SuccessButton,
-					CustomID: fmt.Sprintf("whitelist:approve:%d", app.ID)},
-				discordgo.Button{Label: "Reprovar", Style: discordgo.DangerButton,
-					CustomID: fmt.Sprintf("whitelist:reject:%d", app.ID)},
-			}},
-		},
-	})
-}
-
-func (a *Allowlist) sendFailReport(ctx context.Context, s *discordgo.Session, app *db.AllowlistApplication, questions []db.QuizQuestion, score, passPct int) {
-	cfg, _ := a.b.DB.GetGuildConfig(ctx, app.GuildID)
-	if cfg == nil || cfg.WhitelistLogChannelID == "" {
+	if channelID == "" {
 		return
 	}
-	ext := a.b.DB.GetExtendedConfig(ctx, app.GuildID)
-	color := embedColor(ext.EmbedColor)
 
-	sb := &strings.Builder{}
-	fmt.Fprintf(sb, "**Aplicação #%04d** de <@%s>\n", app.AppNumber, app.UserID)
-	fmt.Fprintf(sb, "**Resultado:** Auto-reprovado — %d%% (mínimo: %d%%)\n\n", score, passPct)
-
-	for _, q := range questions {
-		ans := app.Answers[q.Field]
-		if ans == "" {
-			ans = "_sem resposta_"
-		}
-		if q.Type == "quiz" && len(q.Options) > 0 {
-			correct := app.QuizState.Results[q.Field]
-			mark := "❌"
-			if correct {
-				mark = "✅"
-			}
-			fmt.Fprintf(sb, "%s **%s**\n%s\n\n", mark, q.Q, ans)
-		} else {
-			fmt.Fprintf(sb, "**%s**\n%s\n\n", q.Q, ans)
-		}
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "Usuário", Value: fmt.Sprintf("<@%s>", app.UserID)},
+		{Name: "Personagem", Value: characterName(questions, app)},
+	}
+	if approved {
+		fields = append(fields,
+			&discordgo.MessageEmbedField{Name: "Etapa", Value: "Entrevista final"},
+			&discordgo.MessageEmbedField{Name: "Pontuação", Value: fmt.Sprintf("%d/%d acertos (mínimo: %d)", correct, quizCount, minCorrect)},
+			&discordgo.MessageEmbedField{Name: "Responsável", Value: "Automático"},
+		)
+	} else {
+		fields = append(fields,
+			&discordgo.MessageEmbedField{Name: "Etapa", Value: "Whitelist teórica"},
+			&discordgo.MessageEmbedField{Name: "Pontuação", Value: fmt.Sprintf("%d/%d acertos (mínimo: %d)", correct, quizCount, minCorrect)},
+			&discordgo.MessageEmbedField{Name: "Motivo", Value: reason},
+		)
 	}
 
-	embed := buildEmbed(color, fmt.Sprintf("Reprovado Auto #%04d", app.AppNumber), sb.String(), "")
-	_, _ = s.ChannelMessageSendComplex(cfg.WhitelistLogChannelID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
+		Description: desc,
+		Color:       color,
+		Fields:      fields,
+		Footer:      &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("Whitelist #%04d", app.AppNumber)},
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+	_, _ = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: fmt.Sprintf("<@%s>", app.UserID),
+		Embeds:  []*discordgo.MessageEmbed{embed},
 	})
 }
 
@@ -522,10 +628,8 @@ func (a *Allowlist) WhitelistSkip(s *discordgo.Session, i *discordgo.Interaction
 
 	if next >= len(questions) {
 		app.QuizState = qs
-		_ = a.b.DB.UpdateApplicationStatus(ctx, app.ID, "theory_passed")
-		a.cache.Remove(app.ChannelID)
-		a.sendForReview(ctx, s, app, questions)
-		_, _ = s.ChannelMessageSend(app.ChannelID, "Pergunta pulada. Aplicação enviada para análise.")
+		_, _ = s.ChannelMessageSend(app.ChannelID, "Pergunta pulada.")
+		a.finishApplication(ctx, s, app, questions)
 	} else {
 		_ = a.b.LogDBErr("UpdateApplicationProgress", a.b.DB.UpdateApplicationProgress(ctx, app.ID, app.Answers, next, &now))
 		_, nextQ := quiz.Resolve(&qs, questions, next)
@@ -562,23 +666,46 @@ func (a *Allowlist) checkTimeouts(ctx context.Context, log *slog.Logger) {
 			if err != nil || app == nil {
 				continue
 			}
-			// Apenas aplicações ainda em preenchimento expiram; as que já passaram
-			// na teoria (theory_passed) aguardam revisão humana e não devem expirar.
+			// Apenas aplicações ainda em preenchimento expiram.
 			if app.Status != "pending" {
 				continue
 			}
 			if app.QuestionStartedAt == nil {
 				continue
 			}
-			if time.Since(*app.QuestionStartedAt) > 5*time.Minute {
+
+			// Antes do "iniciar" o prazo é maior; durante as perguntas o timer
+			// reseta a cada mensagem do usuário (question_started_at é tocado).
+			warnAfter, killAfter := answerWarnAfter, answerKillAfter
+			warnMsg := fmt.Sprintf(
+				"⚠️ <@%s> Você está há **1 minuto** sem responder. Em **1 minuto**, este chat será apagado e você terá que tentar novamente.",
+				app.UserID)
+			if app.CurrentQuestion == -1 {
+				warnAfter, killAfter = preStartWarnAfter, preStartKillAfter
+				warnMsg = fmt.Sprintf(
+					"⚠️ <@%s> Você ainda não iniciou a whitelist. Este canal será fechado em **2 minutos** se você não digitar **iniciar**.",
+					app.UserID)
+			}
+
+			idle := time.Since(*app.QuestionStartedAt)
+			switch {
+			case idle > killAfter:
 				if err := a.b.DB.UpdateApplicationStatus(ctx, app.ID, "timed_out"); err != nil {
 					log.Error("falha ao expirar aplicação", "id", app.ID, "err", err)
 					continue
 				}
 				a.cache.Remove(app.ChannelID)
-				_, _ = a.b.Session.ChannelMessageSend(app.ChannelID,
-					"Sua aplicação expirou por inatividade.")
+				a.clearWarned(app.ID)
+				_, _ = a.b.Session.ChannelMessageSend(app.ChannelID, fmt.Sprintf(
+					"⏳ <@%s> Sua whitelist foi cancelada por inatividade. Este canal será apagado em **30 segundos**. Você poderá tentar novamente.",
+					app.UserID))
+				a.deleteChannelAfter(a.b.Session, app.ChannelID, deleteAfterTimeout)
 				log.Info("application timed out", "id", app.ID, "user", app.UserID)
+			case idle > warnAfter:
+				if !a.wasWarned(app.ID, *app.QuestionStartedAt) {
+					a.markWarned(app.ID, *app.QuestionStartedAt)
+					_, _ = a.b.Session.ChannelMessageSend(app.ChannelID, warnMsg)
+				}
 			}
 		}
 	}

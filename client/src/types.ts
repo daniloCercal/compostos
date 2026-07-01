@@ -206,7 +206,10 @@ export interface GuildConfig {
   ticketLogChannelId: string
   whitelistChannelId: string
   whitelistLogChannelId: string
+  whitelistApprovedChannelId: string
+  whitelistRejectedChannelId: string
   whitelistRoleId: string
+  whitelistRejectedRoleId: string
   verifiedRoleId: string
   staffRoleId: string
   adminRoleId: string

@@ -208,6 +208,12 @@ ALTER TABLE public.allowlist_applications
   ADD CONSTRAINT allowlist_applications_status_check
   CHECK (status IN ('pending', 'theory_passed', 'approved', 'rejected', 'cancelled', 'timed_out'));
 
+-- Canais e cargo de resultado da whitelist (aprovados/reprovados).
+ALTER TABLE public.guild_configs
+  ADD COLUMN IF NOT EXISTS whitelist_approved_channel_id text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS whitelist_rejected_channel_id text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS whitelist_rejected_role_id    text NOT NULL DEFAULT '';
+
 -- =============================================================================
 -- FIM
 -- =============================================================================

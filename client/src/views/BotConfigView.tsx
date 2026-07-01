@@ -175,7 +175,10 @@ export function BotConfigView({ session }: BotConfigViewProps) {
   const [ticketLogChannelId, setTicketLogChannelId] = useState('')
   const [whitelistChannelId, setWhitelistChannelId] = useState('')
   const [whitelistLogChannelId, setWhitelistLogChannelId] = useState('')
+  const [whitelistApprovedChannelId, setWhitelistApprovedChannelId] = useState('')
+  const [whitelistRejectedChannelId, setWhitelistRejectedChannelId] = useState('')
   const [whitelistRoleId, setWhitelistRoleId] = useState('')
+  const [whitelistRejectedRoleId, setWhitelistRejectedRoleId] = useState('')
   const [verifiedRoleId, setVerifiedRoleId] = useState('')
   const [staffRoleId, setStaffRoleId] = useState('')
   const [adminRoleId, setAdminRoleId] = useState('')
@@ -261,7 +264,10 @@ export function BotConfigView({ session }: BotConfigViewProps) {
       setTicketLogChannelId(cfg.ticketLogChannelId)
       setWhitelistChannelId(cfg.whitelistChannelId)
       setWhitelistLogChannelId(cfg.whitelistLogChannelId)
+      setWhitelistApprovedChannelId(cfg.whitelistApprovedChannelId)
+      setWhitelistRejectedChannelId(cfg.whitelistRejectedChannelId)
       setWhitelistRoleId(cfg.whitelistRoleId)
+      setWhitelistRejectedRoleId(cfg.whitelistRejectedRoleId)
       setVerifiedRoleId(cfg.verifiedRoleId)
       setStaffRoleId(cfg.staffRoleId)
       setAdminRoleId(cfg.adminRoleId)
@@ -303,7 +309,10 @@ export function BotConfigView({ session }: BotConfigViewProps) {
         ticketLogChannelId,
         whitelistChannelId,
         whitelistLogChannelId,
+        whitelistApprovedChannelId,
+        whitelistRejectedChannelId,
         whitelistRoleId,
+        whitelistRejectedRoleId,
         verifiedRoleId,
         staffRoleId,
         adminRoleId,
@@ -337,7 +346,10 @@ export function BotConfigView({ session }: BotConfigViewProps) {
         ticketLogChannelId,
         whitelistChannelId,
         whitelistLogChannelId,
+        whitelistApprovedChannelId,
+        whitelistRejectedChannelId,
         whitelistRoleId,
+        whitelistRejectedRoleId,
         verifiedRoleId,
         staffRoleId,
         adminRoleId,
@@ -611,6 +623,8 @@ export function BotConfigView({ session }: BotConfigViewProps) {
                       <ChannelSelect label="Logs gerais" value={logChannelId} onChange={setLogChannelId} channels={textChannels} disabled={!canEdit} onDirty={onDirty} />
                       <ChannelSelect label="Log de tickets" value={ticketLogChannelId} onChange={setTicketLogChannelId} channels={textChannels} disabled={!canEdit} onDirty={onDirty} />
                       <ChannelSelect label="Log da whitelist" value={whitelistLogChannelId} onChange={setWhitelistLogChannelId} channels={textChannels} disabled={!canEdit} onDirty={onDirty} />
+                      <ChannelSelect label="Aprovados (whitelist)" value={whitelistApprovedChannelId} onChange={setWhitelistApprovedChannelId} channels={textChannels} disabled={!canEdit} onDirty={onDirty} />
+                      <ChannelSelect label="Reprovados (whitelist)" value={whitelistRejectedChannelId} onChange={setWhitelistRejectedChannelId} channels={textChannels} disabled={!canEdit} onDirty={onDirty} />
                     </div>
                   </div>
 
@@ -643,6 +657,7 @@ export function BotConfigView({ session }: BotConfigViewProps) {
                     <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">Cargos</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <RoleSelect label="Cargo de aprovado (whitelist)" value={whitelistRoleId} onChange={setWhitelistRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
+                      <RoleSelect label="Cargo de reprovado (whitelist)" value={whitelistRejectedRoleId} onChange={setWhitelistRejectedRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
                       <RoleSelect label="Cargo de verificado" value={verifiedRoleId} onChange={setVerifiedRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
                       <RoleSelect label="Cargo de Suporte" value={staffRoleId} onChange={setStaffRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />
                       <RoleSelect label="Cargo de Admin" value={adminRoleId} onChange={setAdminRoleId} roles={roles} disabled={!canEdit} onDirty={onDirty} />

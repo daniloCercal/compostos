@@ -296,8 +296,14 @@ interface GuildConfigApiItem {
   whitelist_channel_id?: string
   whitelistLogChannelId?: string
   whitelist_log_channel_id?: string
+  whitelistApprovedChannelId?: string
+  whitelist_approved_channel_id?: string
+  whitelistRejectedChannelId?: string
+  whitelist_rejected_channel_id?: string
   whitelistRoleId?: string
   whitelist_role_id?: string
+  whitelistRejectedRoleId?: string
+  whitelist_rejected_role_id?: string
   verifiedRoleId?: string
   verified_role_id?: string
   staffRoleId?: string
@@ -369,7 +375,10 @@ function normalizeGuildConfig(item: GuildConfigApiItem): GuildConfig {
     ticketLogChannelId: item.ticketLogChannelId ?? item.ticket_log_channel_id ?? '',
     whitelistChannelId: item.whitelistChannelId ?? item.whitelist_channel_id ?? '',
     whitelistLogChannelId: item.whitelistLogChannelId ?? item.whitelist_log_channel_id ?? '',
+    whitelistApprovedChannelId: item.whitelistApprovedChannelId ?? item.whitelist_approved_channel_id ?? '',
+    whitelistRejectedChannelId: item.whitelistRejectedChannelId ?? item.whitelist_rejected_channel_id ?? '',
     whitelistRoleId: item.whitelistRoleId ?? item.whitelist_role_id ?? '',
+    whitelistRejectedRoleId: item.whitelistRejectedRoleId ?? item.whitelist_rejected_role_id ?? '',
     verifiedRoleId: item.verifiedRoleId ?? item.verified_role_id ?? '',
     staffRoleId: item.staffRoleId ?? item.staff_role_id ?? '',
     adminRoleId: item.adminRoleId ?? item.admin_role_id ?? '',

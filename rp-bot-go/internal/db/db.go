@@ -45,7 +45,11 @@ func (p *Pool) Close() { p.pool.Close() }
 func (p *Pool) GetGuildConfig(ctx context.Context, guildID string) (*GuildConfig, error) {
 	row := p.pool.QueryRow(ctx, `
 		SELECT guild_id, log_channel_id, ticket_category_id, ticket_log_channel_id,
-		       whitelist_channel_id, whitelist_log_channel_id, whitelist_role_id,
+		       whitelist_channel_id, whitelist_log_channel_id,
+		       COALESCE(whitelist_approved_channel_id, ''),
+		       COALESCE(whitelist_rejected_channel_id, ''),
+		       whitelist_role_id,
+		       COALESCE(whitelist_rejected_role_id, ''),
 		       verified_role_id, staff_role_id, admin_role_id,
 		       max_tickets_per_user, ticket_prefix, whitelist_pass_message,
 		       whitelist_fail_message, welcome_message,
@@ -57,7 +61,9 @@ func (p *Pool) GetGuildConfig(ctx context.Context, guildID string) (*GuildConfig
 	var panelJSON []byte
 	err := row.Scan(
 		&g.GuildID, &g.LogChannelID, &g.TicketCategoryID, &g.TicketLogChannelID,
-		&g.WhitelistChannelID, &g.WhitelistLogChannelID, &g.WhitelistRoleID,
+		&g.WhitelistChannelID, &g.WhitelistLogChannelID,
+		&g.WhitelistApprovedChannelID, &g.WhitelistRejectedChannelID,
+		&g.WhitelistRoleID, &g.WhitelistRejectedRoleID,
 		&g.VerifiedRoleID, &g.StaffRoleID, &g.AdminRoleID,
 		&g.MaxTicketsPerUser, &g.TicketPrefix, &g.WhitelistPassMessage,
 		&g.WhitelistFailMessage, &g.WelcomeMessage, &g.WhitelistPassScore,
